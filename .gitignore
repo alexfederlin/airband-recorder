@@ -1,0 +1,12 @@
+# Personal settings (contain the Rdio Scanner API key)
+*.conf
+!*.conf.example
+
+# Recordings and runtime data
+*.wav
+*.json.tmp
+scanner-archive/
+scanner-recordings/
+
+# Python
+__pycache__/
