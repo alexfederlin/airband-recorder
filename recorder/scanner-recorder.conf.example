@@ -1,0 +1,8 @@
+# Copy to ~/.config/scanner-recorder.conf and fill in your values.
+# Never commit the real file: it contains your Rdio Scanner API key.
+DEVICE="plughw:CARD=Device,DEV=0"
+KEY=""                 # Rdio Scanner API key; empty = archive only, no upload
+FREQ=119700000         # Monitored frequency in Hz
+#THRESHOLD="2%"
+#HANG="2.0"
+#MIN_LEN="0.5"
