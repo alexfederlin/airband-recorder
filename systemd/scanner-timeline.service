@@ -1,0 +1,12 @@
+[Unit]
+Description=Scanner timeline
+After=network.target
+
+[Service]
+User=alex
+ExecStart=/usr/bin/python3 /home/alex/scanner-timeline/server.py
+Environment=WHISPER_LANG=en
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

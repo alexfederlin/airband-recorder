@@ -1,0 +1,12 @@
+[Unit]
+Description=Rdio Scanner
+After=network.target
+
+[Service]
+User=alex
+WorkingDirectory=/opt/rdio-scanner
+ExecStart=/opt/rdio-scanner/rdio-scanner
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

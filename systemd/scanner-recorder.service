@@ -1,0 +1,11 @@
+[Unit]
+Description=Scanner recorder
+After=rdio-scanner.service sound.target
+
+[Service]
+User=alex
+ExecStart=/home/alex/scanner-recorder/scanner-recorder.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
