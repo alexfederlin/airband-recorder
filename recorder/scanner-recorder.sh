@@ -5,19 +5,20 @@
 set -u
 
 # --- Default settings ---------------------------------------------------------
-# Don't edit these here. Put your own values in ~/.config/scanner-recorder.conf
-# so they survive future updates of this script.
-DEVICE="plughw:CARD=Device,DEV=0"    # USB sound card (list them with: arecord -L | grep plughw)
-API="http://localhost:3000/api/call-upload"
-KEY=""                               # Rdio Scanner API key; leave empty to skip uploading
-SYSTEM=1                             # System ID in Rdio Scanner
-TALKGROUP=1                          # Talkgroup ID in Rdio Scanner
-FREQ=118000000                       # Monitored frequency in Hz
-THRESHOLD="2%"                       # Audio level that counts as a transmission
-HANG="2.0"                           # Seconds of silence that end a recording
-MIN_LEN="0.5"                        # Discard clips shorter than this (clicks, blips)
-DIR="$HOME/scanner-recordings"       # Temporary working folder
-ARCHIVE="$HOME/scanner-archive"      # Clips for the timeline page, one folder per day
+# Don't edit these here. Set them as environment variables (Docker: the .env
+# file) or put them in ~/.config/scanner-recorder.conf, so they survive future
+# updates of this script.
+DEVICE="${DEVICE:-plughw:CARD=Device,DEV=0}"         # USB sound card (list them with: arecord -L | grep plughw)
+API="${API:-http://localhost:3000/api/call-upload}"
+KEY="${KEY:-}"                                       # Rdio Scanner API key; leave empty to skip uploading
+SYSTEM="${SYSTEM:-1}"                                # System ID in Rdio Scanner
+TALKGROUP="${TALKGROUP:-1}"                          # Talkgroup ID in Rdio Scanner
+FREQ="${FREQ:-118000000}"                            # Monitored frequency in Hz
+THRESHOLD="${THRESHOLD:-2%}"                         # Audio level that counts as a transmission
+HANG="${HANG:-2.0}"                                  # Seconds of silence that end a recording
+MIN_LEN="${MIN_LEN:-0.5}"                            # Discard clips shorter than this (clicks, blips)
+DIR="${DIR:-$HOME/scanner-recordings}"               # Temporary working folder
+ARCHIVE="${ARCHIVE:-$HOME/scanner-archive}"          # Clips for the timeline page, one folder per day
 # ------------------------------------------------------------------------------
 
 CONFIG="${CONFIG:-$HOME/.config/scanner-recorder.conf}"
