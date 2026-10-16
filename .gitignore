@@ -1,6 +1,10 @@
 # Personal settings (contain the Rdio Scanner API key)
 *.conf
 !*.conf.example
+.env
+
+# Docker data folder (recordings, Rdio Scanner database)
+data/
 
 # Recordings and runtime data
 *.wav

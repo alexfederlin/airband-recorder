@@ -1,0 +1,53 @@
+# Starts Rdio Scanner, the recorder and the timeline.
+# Settings come from the .env file next to this one (copy .env.example).
+# Recordings and Rdio Scanner's database are kept in ./data.
+
+services:
+  rdio-scanner:
+    image: chuot/rdio-scanner:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - ./data/rdio-scanner:/app/data
+
+  recorder:
+    build: ./recorder
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - rdio-scanner
+    devices:
+      - /dev/snd:/dev/snd
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      DEVICE: ${DEVICE:-plughw:CARD=Device,DEV=0}
+      KEY: ${KEY:-}
+      FREQ: ${FREQ:-118000000}
+      THRESHOLD: ${THRESHOLD:-2%}
+      HANG: ${HANG:-2.0}
+      MIN_LEN: ${MIN_LEN:-0.5}
+      API: http://rdio-scanner:3000/api/call-upload
+      DIR: /data/recordings
+      ARCHIVE: /data/archive
+    volumes:
+      - ./data:/data
+
+  timeline:
+    build:
+      context: ./timeline
+      args:
+        WHISPER_MODEL_NAME: ${WHISPER_MODEL_NAME:-base}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8090:8090"
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      WHISPER_LANG: ${WHISPER_LANG:-en}
+      WHISPER_THREADS: ${WHISPER_THREADS:-4}
+      KEEP_DAYS: ${KEEP_DAYS:-30}
+    volumes:
+      - ./data/archive:/data/archive

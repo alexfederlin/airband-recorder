@@ -4,47 +4,46 @@ Records an airport frequency from a scanner, splits it into one clip per transmi
 
 - **Recorder** (`recorder/`): captures the scanner audio from a USB sound card, cuts it into clips, archives each clip and uploads it to [Rdio Scanner](https://github.com/chuot/rdio-scanner).
 - **Timeline** (`timeline/`): a small Python server (standard library only) that transcribes archived clips with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and serves a day-by-day timeline with search and continuous playback.
-- **Services** (`systemd/`): unit files that start everything at boot.
+- **Rdio Scanner**: live feed and call archive, run from its official Docker image.
 
-Built for a ThinkPad Yoga 12 running Xubuntu (hostname `adsb`, user `alex`), a Quansheng UV-K5(8) and a C-Media USB sound card. Adjust user names and paths in `systemd/` if yours differ.
+All three run as containers, started with one `docker compose` command.
+
+Built for a ThinkPad Yoga 12 running Xubuntu (hostname `adsb`), a Quansheng UV-K5(8) and a C-Media USB sound card.
 
 ## Repository layout
 
-| Repository file | Installed to |
+| Path | What it is |
 | --- | --- |
-| `recorder/scanner-recorder.sh` | `/home/alex/scanner-recorder/scanner-recorder.sh` |
-| `recorder/scanner-recorder.conf.example` | `/home/alex/.config/scanner-recorder.conf` (with your values) |
-| `timeline/server.py` | `/home/alex/scanner-timeline/server.py` |
-| `timeline/index.html` | `/home/alex/scanner-timeline/index.html` |
-| `systemd/rdio-scanner.service` | `/etc/systemd/system/rdio-scanner.service` |
-| `systemd/scanner-recorder.service` | `/etc/systemd/system/scanner-recorder.service` |
-| `systemd/scanner-timeline.service` | `/etc/systemd/system/scanner-timeline.service` |
+| `docker-compose.yml` | Starts all three containers |
+| `.env.example` | Settings template; copy to `.env` |
+| `recorder/` | Recorder script and its `Dockerfile` |
+| `timeline/` | Timeline server, web page and its `Dockerfile` (builds whisper.cpp and downloads the speech model) |
+| `systemd/` | Unit files for running without Docker (see the end of this file) |
 
-Created at runtime, not in the repository:
+Created at runtime in `./data`, not in the repository:
 
 | Path | What it is |
 | --- | --- |
-| `/home/alex/scanner-archive/YYYY-MM-DD/` | Archived clips: `HHMMSS-n.wav` plus `HHMMSS-n.json` (time, duration, transcript) |
-| `/home/alex/scanner-recordings/` | Recorder's temporary working folder |
-| `/home/alex/scanner-recordings/failed/` | Clips whose Rdio Scanner upload failed |
-| `/home/alex/whisper.cpp/` | whisper.cpp build and models |
-| `/opt/rdio-scanner/` | Rdio Scanner program, database and settings |
+| `data/archive/YYYY-MM-DD/` | Archived clips: `HHMMSS-n.wav` plus `HHMMSS-n.json` (time, duration, transcript) |
+| `data/recordings/` | Recorder's temporary working folder |
+| `data/recordings/failed/` | Clips whose Rdio Scanner upload failed |
+| `data/rdio-scanner/` | Rdio Scanner database and settings |
 
 The recorder writes each clip's `.wav` first and its `.json` last, so the timeline only ever shows complete recordings.
 
 ## Setup
 
-1. **Tools and permissions:** `sudo apt install sox libsox-fmt-all curl ffmpeg unzip build-essential cmake git`, then `sudo usermod -aG audio alex` and log in again.
-2. **Sound card:** check that `arecord -l` lists the USB card. Set the capture level with `alsamixer -c <card>` (F4 for capture) and test with `arecord -D plughw:CARD=Device,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 test.wav`.
-3. **Rdio Scanner:** unzip the latest linux-amd64 release into `/opt/rdio-scanner` and `chown` it to your user. Start it once, open `http://localhost:3000/admin` (first password `rdio-scanner`), change the password, create system 1 and talkgroup 1, create an API key and enable audio conversion.
-4. **Recorder:** copy `recorder/scanner-recorder.sh` to `~/scanner-recorder/` and make it executable. Copy `recorder/scanner-recorder.conf.example` to `~/.config/scanner-recorder.conf` and fill in `DEVICE`, `KEY` and `FREQ`.
-5. **whisper.cpp:** `git clone https://github.com/ggml-org/whisper.cpp ~/whisper.cpp`, then in that folder run `cmake -B build`, `cmake --build build -j --config Release` and `sh ./models/download-ggml-model.sh base`.
-6. **Timeline:** copy `timeline/server.py` and `timeline/index.html` to `~/scanner-timeline/`.
-7. **Services:** copy the three files from `systemd/` to `/etc/systemd/system/`, run `sudo systemctl daemon-reload`, then `sudo systemctl enable --now rdio-scanner scanner-recorder scanner-timeline`.
+1. **Docker:** `sudo apt install docker.io docker-compose-v2 alsa-utils git`, then `sudo usermod -aG docker $USER` and log in again.
+2. **Sound card:** check that `arecord -l` lists the USB card. Set the capture level with `alsamixer -c <card>` (F4 for capture) and test with `arecord -D plughw:CARD=Device,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 test.wav`. The desktop audio system must not hold the card: in `pavucontrol`, Configuration tab, set the USB card's profile to Off.
+3. **Get the code and settings:** `git clone` this repository, `cd` into it, run `cp .env.example .env` and fill in `DEVICE` and `FREQ`. Leave `KEY` empty for now.
+4. **Start:** `docker compose up -d --build`. The first build compiles whisper.cpp and downloads the speech model, which takes a while on the laptop.
+5. **Rdio Scanner:** open `http://adsb.local:3000/admin` (first password `rdio-scanner`), change the password, create system 1 and talkgroup 1, create an API key and enable audio conversion. Put the key into `KEY` in `.env` and run `docker compose up -d` again.
+
+The containers restart automatically, including after a reboot.
 
 ### Recorder settings
 
-`~/.config/scanner-recorder.conf` overrides the defaults at the top of the script. An empty `KEY` skips the Rdio upload and only archives.
+Set these in `.env`, then run `docker compose up -d`. An empty `KEY` skips the Rdio upload and only archives.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -54,20 +53,16 @@ The recorder writes each clip's `.wav` first and its `.json` last, so the timeli
 | `THRESHOLD` | `2%` | Audio level that counts as a transmission |
 | `HANG` | `2.0` | Seconds of silence that end a clip |
 | `MIN_LEN` | `0.5` | Clips shorter than this are discarded |
-| `ARCHIVE` | `~/scanner-archive` | Archive folder; must match the timeline's `ARCHIVE` |
+| `TZ` | `Europe/Berlin` | Time zone for clip times and day folders |
 
 ### Timeline settings
-
-Add these as `Environment=` lines in `scanner-timeline.service`, then run `sudo systemctl daemon-reload` and restart the service.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `WHISPER_LANG` | `en` | Transcription language; `auto` if German traffic is common |
-| `WHISPER_MODEL` | `~/whisper.cpp/models/ggml-base.bin` | Full path to the model; `tiny` is faster, `small` more accurate |
+| `WHISPER_MODEL_NAME` | `base` | Speech model built into the image; `tiny` is faster, `small` more accurate. Needs `docker compose up -d --build` after a change |
 | `WHISPER_THREADS` | `4` | CPU threads for transcription |
 | `KEEP_DAYS` | `30` | Days of recordings to keep; `0` keeps everything |
-| `PORT` | `8090` | Web port of the timeline |
-| `ARCHIVE` | `~/scanner-archive` | Archive folder |
 
 If the "waiting for transcription" count in the timeline header keeps growing, switch to a smaller model. An hour of radio traffic takes about 115 MB of disk space.
 
@@ -87,35 +82,41 @@ In the timeline, pick a day at the top, click the activity strip to jump to a ti
 
 Transcripts often garble callsigns and numbers; use them to find clips, then listen.
 
-## Managing services
+## Managing the containers
+
+Run these in the repository folder. The service names are `recorder`, `timeline` and `rdio-scanner`.
 
 | Command | Effect |
 | --- | --- |
-| `systemctl status <name>` | Show whether it runs and its last log lines |
-| `journalctl -u <name> -f` | Follow its log live |
-| `sudo systemctl restart <name>` | Restart, e.g. after changing settings |
-| `sudo systemctl stop <name>` | Stop until the next reboot |
-| `sudo systemctl disable <name>` | Don't start at boot (`enable` to undo) |
-| `sudo systemctl reset-failed <name>` | Clear a "start request repeated too quickly" failure |
+| `docker compose ps` | Show which containers run |
+| `docker compose logs -f <name>` | Follow a container's log live |
+| `docker compose restart <name>` | Restart one container |
+| `docker compose up -d` | Apply changed settings from `.env` |
+| `docker compose down` | Stop everything (recordings in `./data` are kept) |
+| `git pull && docker compose up -d --build` | Update to the latest code |
+| `docker compose pull rdio-scanner && docker compose up -d` | Update Rdio Scanner |
 
-To update, copy the changed file from the repository over the installed one and restart its service.
+Files in `./data` are owned by root because the containers write them; use `sudo` to delete them by hand.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `arecord -l`: "no soundcards found" | User not in the `audio` group yet. Run `sudo usermod -aG audio alex`, then log in again |
 | Recorder: "audio open error" or "No audio from …" | Wrong `DEVICE`. Use the card's name (`plughw:CARD=Device,DEV=0`); card numbers can change |
 | "Device or resource busy" | The desktop audio system holds the card. In `pavucontrol`, Configuration tab, set the USB card's profile to Off |
-| `rec` hangs and ignores Ctrl+C | SoX can't read this card directly; the recorder uses `arecord` for that reason. End a stuck process with `pkill -9 -x rec` |
-| Service status `203/EXEC` | `ExecStart` path in the unit file doesn't match where the script is |
+| Recorder starts before the USB card is plugged in | Plug it in, then `docker compose restart recorder` |
 | Rdio upload: "no audio" | Empty clips, usually from a wrong `DEVICE` |
 | Many short junk clips | Squelch too open or threshold too low. Tighten the radio's SQL or raise `THRESHOLD` |
 | Pilot replies split from the controller | Raise `HANG` to `3.0` |
 | First syllable cut off | Battery save is on in the radio |
-| Timeline: "Transcription off: whisper.cpp not found" | `whisper-cli` or the model is missing at the configured paths |
+| Timeline: "Transcription off: whisper.cpp not found" | The image build failed partway; run `docker compose build --no-cache timeline` and check its output |
+| Timeline crashes with "Illegal instruction" | The image was built on a different computer. Build it on the laptop itself |
 
 The recorder estimates each clip's start time from when it ended, so times can be off by a second or two.
+
+## Running without Docker
+
+The scripts still run directly on the host. Install `sox libsox-fmt-all curl ffmpeg build-essential cmake git`, add your user to the `audio` group, build whisper.cpp in `~/whisper.cpp`, unzip Rdio Scanner into `/opt/rdio-scanner`, copy `recorder/scanner-recorder.sh` to `~/scanner-recorder/` and `timeline/` to `~/scanner-timeline/`, and put your settings in `~/.config/scanner-recorder.conf` (template: `recorder/scanner-recorder.conf.example`). The unit files in `systemd/` start everything at boot; adjust the user name and paths in them, copy them to `/etc/systemd/system/` and run `sudo systemctl enable --now rdio-scanner scanner-recorder scanner-timeline`.
 
 ## Future extension: ADS-B receiver
 
