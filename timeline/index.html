@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radio log</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --console: #DDE3E8;   /* the strip board */
+    --strip: #FBFCFD;     /* a flight strip */
+    --ink: #17202B;
+    --muted: #586576;
+    --rule: #BBC5CF;
+    --bar: #4A6B8A;
+    --amber: #E09A00;     /* taxiway-sign amber, marks what is playing */
+    --amber-soft: #FFF0C2;
+    --amber-ink: #1B1400;
+    --font: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --console: #151C26;
+      --strip: #1F2935;
+      --ink: #E6EBF0;
+      --muted: #97A5B5;
+      --rule: #344251;
+      --bar: #7FA3C6;
+      --amber: #F2B01E;
+      --amber-soft: #3B311A;
+      --amber-ink: #1B1400;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 220px; }
+  body {
+    margin: 0;
+    background: var(--console);
+    color: var(--ink);
+    font: 16px/1.45 var(--font);
+    font-variant-numeric: tabular-nums;
+    padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
+  }
+  button, select, input { font: inherit; color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  /* --- Header ----------------------------------------------------------- */
+  .top {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--console);
+    border-bottom: 1px solid var(--rule);
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    padding-bottom: 12px;
+  }
+  .head {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 10px 24px;
+  }
+  .daynav { display: flex; align-items: center; gap: 2px; margin-left: -8px; }
+  .daynav button {
+    width: 36px; height: 36px; border: 0; background: none; border-radius: 6px;
+    cursor: pointer; display: grid; place-items: center;
+  }
+  .daynav button:hover:not(:disabled) { background: var(--strip); }
+  .daynav button:disabled { opacity: .3; cursor: default; }
+  .daynav select {
+    appearance: none; -webkit-appearance: none;
+    border: 0; background: none; cursor: pointer;
+    font-size: 26px; font-weight: 600; letter-spacing: -0.01em;
+    padding: 0 4px; max-width: 70vw;
+  }
+  .stats { color: var(--muted); font-size: 15px; display: flex; flex-wrap: wrap; gap: 2px 16px; }
+  .stats .warn { color: var(--ink); }
+  .search { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .search input[type=search] {
+    width: 240px; max-width: 100%;
+    padding: 7px 10px; border: 1px solid var(--rule); border-radius: 6px;
+    background: var(--strip);
+  }
+  .search label { font-size: 15px; color: var(--muted); display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+
+  /* --- Day strip: the 24-hour activity line --------------------------------- */
+  .dayline { margin-top: 12px; }
+  .board {
+    position: relative; height: 64px;
+    background: var(--strip); border: 1px solid var(--rule); border-radius: 4px;
+    cursor: crosshair; overflow: hidden;
+  }
+  .board svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .board .g  { stroke: var(--rule); stroke-width: 1; }
+  .board .g6 { stroke: var(--muted); stroke-width: 1; opacity: .5; }
+  .board .b  { fill: var(--bar); }
+  .board .m  { fill: var(--amber); }
+  .board .now { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
+  .board .ph { stroke: var(--amber); stroke-width: 3; }
+  .ticks { position: relative; height: 18px; font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .ticks span { position: absolute; transform: translateX(-50%); }
+  .ticks span:first-child { transform: none; }
+
+  /* --- Transmission list (flight-strip rows) -------------------------------- */
+  main { padding-top: 6px; }
+  .hour { font-size: 15px; font-weight: 600; color: var(--muted); margin: 22px 0 6px; }
+  ol.calls { list-style: none; margin: 0; padding: 0; }
+  .call { margin: 4px 0; scroll-margin-bottom: 130px; }
+  .call button {
+    display: grid; grid-template-columns: 6em 4.5em minmax(0, 1fr);
+    width: 100%; padding: 0; text-align: left; cursor: pointer;
+    background: var(--strip);
+    border: 1px solid var(--rule); border-left: 6px solid var(--bar); border-radius: 3px;
+  }
+  .call button > span { padding: 9px 12px; }
+  .call .t { font-weight: 600; border-right: 1px solid var(--rule); }
+  .call .d { border-right: 1px solid var(--rule); color: var(--muted); font-size: 15px; }
+  .call .tx { overflow-wrap: anywhere; max-width: 75ch; }
+  .call .tx.quiet { color: var(--muted); font-style: italic; }
+  .call .date { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+  .call button:hover { border-color: var(--muted); border-left-color: var(--bar); }
+  .call.current button { background: var(--amber-soft); border-left-color: var(--amber); }
+  button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--amber); outline-offset: 2px;
+  }
+  mark { background: var(--amber); color: var(--amber-ink); border-radius: 2px; padding: 0 2px; }
+  .gap { color: var(--muted); font-size: 14px; padding: 6px 0 6px calc(6em + 6px); list-style: none; margin: 0; }
+  .empty { margin: 48px 0; max-width: 46ch; color: var(--muted); font-size: 17px; }
+  .empty strong { color: var(--ink); display: block; font-size: 20px; margin-bottom: 4px; }
+  .notice {
+    margin: 12px 0 0; padding: 10px 14px; border-radius: 4px;
+    background: var(--amber-soft); border-left: 6px solid var(--amber);
+  }
+  .notice[hidden] { display: none; }
+
+  /* --- Player ------------------------------------------------------------- */
+  .player {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+    background: var(--strip); border-top: 1px solid var(--rule);
+    padding-top: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .player .wrap { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; }
+  .ctrl { display: flex; gap: 8px; align-items: center; }
+  .ctrl button {
+    width: 42px; height: 42px; border-radius: 50%; cursor: pointer;
+    border: 1px solid var(--rule); background: var(--console);
+    display: grid; place-items: center;
+  }
+  .ctrl #play { width: 50px; height: 50px; background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+  .now { flex: 1 1 260px; min-width: 0; }
+  .now .when { font-weight: 600; }
+  .now .what { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .prog { height: 3px; background: var(--rule); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .prog i { display: block; height: 100%; width: 0; background: var(--amber); }
+  .opts { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .speed { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+  .speed button { border: 0; background: none; padding: 6px 10px; cursor: pointer; min-width: 44px; }
+  .speed button + button { border-left: 1px solid var(--rule); }
+  .speed button[aria-pressed="true"] { background: var(--ink); color: var(--strip); }
+  .opts label { display: flex; gap: 6px; align-items: center; font-size: 15px; color: var(--muted); white-space: nowrap; }
+
+  @media (max-width: 640px) {
+    html { scroll-padding-top: 280px; }
+    .wrap { padding: 0 14px; }
+    .daynav select { font-size: 22px; }
+    .search { margin-left: 0; width: 100%; }
+    .search input[type=search] { flex: 1; width: auto; }
+    .call button { grid-template-columns: auto minmax(0, 1fr); }
+    .call .d { border-right: 0; }
+    .call .tx { grid-column: 1 / -1; border-top: 1px solid var(--rule); }
+    .gap { padding-left: 8px; }
+    .ticks .odd { display: none; }
+    .player .wrap { gap: 8px 12px; }
+    .now { order: -1; flex-basis: 100%; }
+    .ctrl button { width: 38px; height: 38px; }
+    .ctrl #play { width: 44px; height: 44px; }
+    .opts { flex: 1; justify-content: flex-end; gap: 8px 12px; }
+    .speed button { min-width: 0; padding: 6px 8px; }
+    body { padding-bottom: calc(175px + env(safe-area-inset-bottom, 0px)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="head">
+      <div class="daynav">
+        <button type="button" id="olderDay" aria-label="Previous day" title="Previous day">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <select id="daySelect" aria-label="Day"></select>
+        <button type="button" id="newerDay" aria-label="Next day" title="Next day">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+      <div class="stats" id="stats" aria-live="polite"></div>
+      <form class="search" id="searchForm" role="search" onsubmit="return false">
+        <input type="search" id="q" placeholder="Search transcripts" aria-label="Search transcripts" autocomplete="off">
+        <label><input type="checkbox" id="allDays"> All days</label>
+      </form>
+    </div>
+
+    <div class="dayline">
+      <div class="board" id="board" title="Click to jump to that time">
+        <svg id="strip" viewBox="0 0 1440 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <div class="ticks" id="ticks" aria-hidden="true"></div>
+    </div>
+    <p class="notice" id="notice" role="status" hidden></p>
+  </div>
+</header>
+
+<main class="wrap" id="list" aria-live="off"></main>
+
+<footer class="player">
+  <div class="wrap">
+    <div class="ctrl">
+      <button type="button" id="prev" aria-label="Previous transmission" title="Previous (K)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg>
+      </button>
+      <button type="button" id="play" aria-label="Play" title="Play / pause (Space)"></button>
+      <button type="button" id="next" aria-label="Next transmission" title="Next (J)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>
+      </button>
+    </div>
+    <div class="now">
+      <div class="when" id="nowWhen">&nbsp;</div>
+      <div class="what" id="nowWhat">&nbsp;</div>
+      <div class="prog"><i id="progBar"></i></div>
+    </div>
+    <div class="opts">
+      <div class="speed" role="group" aria-label="Playback speed" id="speed"></div>
+      <label><input type="checkbox" id="continuous" checked> Play next automatically</label>
+    </div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const $ = (sel) => document.querySelector(sel);
+  const ICON_PLAY = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>';
+  const ICON_PAUSE = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4.5h4.5v15H6zM13.5 4.5H18v15h-4.5z"/></svg>';
+  const SPEEDS = [1, 1.25, 1.5, 2];
+  const GAP_SECONDS = 300;
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const state = {
+    days: [], today: null, day: null,
+    clips: [], visible: [], cur: -1,
+    results: null,
+    q: '', allDays: false,
+    speed: 1, waiting: false,
+    transcription: 'on', pending: 0, transcriptionError: null,
+    signature: '',
+  };
+  const audio = new Audio();
+  audio.preload = 'auto';
+
+  // --- Formatting -----------------------------------------------------------
+  const pad = (n) => String(n).padStart(2, '0');
+  const timeOf = (ts) => {
+    const d = new Date(ts * 1000);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const minuteOfDay = (ts) => { const d = new Date(ts * 1000); return d.getHours() * 60 + d.getMinutes(); };
+  const dur = (s) => (s < 10 ? (Math.round(s * 10) / 10).toFixed(1) : Math.round(s)) + ' s';
+  const total = (s) => {
+    if (s < 60) return Math.round(s) + ' s';
+    const m = Math.round(s / 60);
+    return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+  };
+  const gapText = (s) => {
+    const m = Math.round(s / 60);
+    return (m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min') + ' without traffic';
+  };
+  const dayLabel = (iso, short) => {
+    const d = new Date(iso + 'T12:00:00');
+    const opts = short ? { weekday: 'short', day: 'numeric', month: 'short' }
+                       : { weekday: 'long', day: 'numeric', month: 'long' };
+    return d.toLocaleDateString('en-GB', opts);
+  };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const highlight = (text) => {
+    const safe = esc(text);
+    if (!state.q) return safe;
+    const re = new RegExp(esc(state.q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    return safe.replace(re, (m) => `<mark>${m}</mark>`);
+  };
+  const transcriptOf = (c) => {
+    if (c.status === 'pending') {
+      return state.transcription === 'on' ? ['quiet', 'Waiting for transcription'] : ['quiet', 'No transcript'];
+    }
+    if (c.status === 'error') return ['quiet', 'Transcription failed'];
+    if (!c.transcript) return ['quiet', 'No speech recognised'];
+    return ['', highlight(c.transcript)];
+  };
+
+  // --- Data -----------------------------------------------------------------
+  async function api(path) {
+    const res = await fetch(path, { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+    return res.json();
+  }
+  function notice(text) {
+    const el = $('#notice');
+    el.textContent = text || '';
+    el.hidden = !text;
+  }
+  function takeStatus(d) {
+    state.transcription = d.transcription;
+    state.pending = d.pending;
+    state.transcriptionError = d.transcription_error;
+    if (d.today) state.today = d.today;
+  }
+
+  async function loadDays() {
+    const d = await api('/api/days');
+    takeStatus(d);
+    state.days = d.days;
+    if (!state.days.some((x) => x.date === state.today)) {
+      state.days.unshift({ date: state.today, count: 0, seconds: 0 });
+    }
+    renderDaySelect();
+  }
+
+  async function loadDay(date, { quiet = false } = {}) {
+    const d = await api('/api/day/' + date);
+    takeStatus(d);
+    const currentId = state.clips[state.cur] && state.clips[state.cur].id;
+    const sameDay = state.day === date;
+    const oldCount = state.clips.length;
+    state.day = date;
+    state.clips = d.clips;
+    state.cur = currentId ? state.clips.findIndex((c) => c.id === currentId) : -1;
+
+    const entry = state.days.find((x) => x.date === date);
+    if (entry) {
+      entry.count = d.clips.length;
+      entry.seconds = d.clips.reduce((a, c) => a + (c.duration || 0), 0);
+    }
+    const sig = d.clips.map((c) => c.id + c.status).join('|');
+    const changed = sig !== state.signature;
+    state.signature = sig;
+
+    if (!quiet || changed) render();
+    else renderStats();
+
+    // Live: if playback was waiting at the end of today, continue with the new clip
+    if (sameDay && state.waiting && d.clips.length > oldCount) {
+      state.waiting = false;
+      next();
+    }
+  }
+
+  async function switchDay(date) {
+    if (date === state.day) return;
+    audio.pause();
+    state.cur = -1;
+    state.waiting = false;
+    state.signature = '';
+    history.replaceState(null, '', '#' + date);
+    try { await loadDay(date); notice(''); }
+    catch (e) { notice('The recordings for this day could not be loaded. Check that the timeline server is running.'); }
+    renderDaySelect();
+    window.scrollTo({ top: 0 });
+  }
+
+  async function runSearch() {
+    if (!state.allDays || state.q.length < 2) { state.results = null; render(); return; }
+    try {
+      const d = await api('/api/search?q=' + encodeURIComponent(state.q));
+      if (d.query !== state.q) return;
+      state.results = d.results;
+      notice('');
+    } catch (e) {
+      notice('Search failed. Check that the timeline server is running.');
+    }
+    render();
+  }
+
+  // --- Rendering --------------------------------------------------------------
+  function computeVisible() {
+    const q = state.q.toLowerCase();
+    state.visible = [];
+    state.clips.forEach((c, i) => {
+      if (!q || state.allDays || (c.transcript && c.transcript.toLowerCase().includes(q))) state.visible.push(i);
+    });
+  }
+
+  function render() {
+    computeVisible();
+    renderStats();
+    renderStrip();
+    renderList();
+    renderPlayer();
+  }
+
+  function renderDaySelect() {
+    const sel = $('#daySelect');
+    sel.innerHTML = state.days.map((d) => {
+      const label = d.date === state.today ? 'Today, ' + dayLabel(d.date, true) : dayLabel(d.date);
+      return `<option value="${d.date}"${d.date === state.day ? ' selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+    const i = state.days.findIndex((d) => d.date === state.day);
+    $('#olderDay').disabled = i < 0 || i >= state.days.length - 1;
+    $('#newerDay').disabled = i <= 0;
+  }
+
+  function renderStats() {
+    const parts = [];
+    const n = state.clips.length;
+    const secs = state.clips.reduce((a, c) => a + (c.duration || 0), 0);
+    parts.push(`<span>${n} ${n === 1 ? 'transmission' : 'transmissions'}</span>`);
+    if (n) parts.push(`<span>${total(secs)} on air</span>`);
+    if (state.transcription === 'off') {
+      parts.push('<span class="warn">Transcription off: whisper.cpp not found</span>');
+    } else if (state.pending > 0) {
+      parts.push(`<span>${state.pending} waiting for transcription</span>`);
+    }
+    $('#stats').innerHTML = parts.join('');
+  }
+
+  function renderTicks() {
+    let html = '';
+    for (let h = 0; h < 24; h += 3) html += `<span${h % 6 ? ' class="odd"' : ''} style="left:${(h / 24) * 100}%">${pad(h)}:00</span>`;
+    $('#ticks').innerHTML = html;
+  }
+
+  function renderStrip() {
+    const H = 100;
+    const sums = new Array(288).fill(0);
+    const hits = new Array(288).fill(false);
+    const q = state.q.toLowerCase();
+    for (const c of state.clips) {
+      const b = Math.floor(minuteOfDay(c.start) / 5);
+      sums[b] += c.duration || 0;
+      if (q && !state.allDays && c.transcript && c.transcript.toLowerCase().includes(q)) hits[b] = true;
+    }
+    const max = Math.max(60, ...sums);
+    let s = '';
+    for (let h = 1; h < 24; h++) {
+      s += `<line x1="${h * 60}" x2="${h * 60}" y1="0" y2="${H}" class="${h % 6 ? 'g' : 'g6'}" vector-effect="non-scaling-stroke"/>`;
+    }
+    sums.forEach((v, i) => {
+      if (!v) return;
+      const bh = Math.max(8, Math.sqrt(v / max) * (H - 10));
+      s += `<rect x="${i * 5 + 0.5}" y="${H - bh}" width="4" height="${bh}" class="${hits[i] ? 'm' : 'b'}"/>`;
+    });
+    if (state.day === state.today) {
+      const now = new Date();
+      const x = now.getHours() * 60 + now.getMinutes();
+      s += `<line x1="${x}" x2="${x}" y1="0" y2="${H}" class="now" vector-effect="non-scaling-stroke"/>`;
+    }
+    const c = state.clips[state.cur];
+    if (c) {
+      const d = new Date(c.start * 1000);
+      const x = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+      s += `<line x1="${x}" x2="${x}" y1="0" y2="${H}" class="ph" vector-effect="non-scaling-stroke"/>`;
+    }
+    $('#strip').innerHTML = s;
+  }
+
+  function renderList() {
+    const list = $('#list');
+
+    if (state.results) {
+      if (!state.results.length) {
+        list.innerHTML = `<div class="empty"><strong>No matches</strong>No transcript on any day mentions “${esc(state.q)}”.</div>`;
+        return;
+      }
+      let html = `<h2 class="hour">${state.results.length} ${state.results.length === 1 ? 'match' : 'matches'} across all days</h2><ol class="calls">`;
+      for (const c of state.results) {
+        const [cls, text] = transcriptOf(c);
+        html += `<li class="call"><button type="button" data-day="${c.date}" data-id="${esc(c.id)}">`
+              + `<span class="t">${timeOf(c.start)}<span class="date">${esc(dayLabel(c.date, true))}</span></span>`
+              + `<span class="d">${dur(c.duration || 0)}</span>`
+              + `<span class="tx ${cls}">${text}</span></button></li>`;
+      }
+      list.innerHTML = html + '</ol>';
+      return;
+    }
+
+    if (!state.clips.length) {
+      list.innerHTML = state.day === state.today
+        ? '<div class="empty"><strong>No transmissions yet today</strong>New transmissions appear here as soon as the recorder captures them.</div>'
+        : '<div class="empty"><strong>No transmissions on this day</strong>Pick another day from the list at the top.</div>';
+      return;
+    }
+    if (!state.visible.length) {
+      list.innerHTML = `<div class="empty"><strong>No matches on this day</strong>No transcript mentions “${esc(state.q)}”. Tick “All days” to search every day.</div>`;
+      return;
+    }
+
+    const filtering = !!state.q;
+    let html = '';
+    let lastHour = null;
+    let prevEnd = null;
+    for (const i of state.visible) {
+      const c = state.clips[i];
+      const h = new Date(c.start * 1000).getHours();
+      const gap = prevEnd === null ? 0 : c.start - prevEnd;
+      const showGap = !filtering && gap > GAP_SECONDS;
+      if (h !== lastHour) {
+        if (lastHour !== null) html += '</ol>';
+        if (showGap) html += `<p class="gap">${gapText(gap)}</p>`;
+        html += `<h2 class="hour">${pad(h)}:00</h2><ol class="calls">`;
+        lastHour = h;
+      } else if (showGap) {
+        html += `<li class="gap">${gapText(gap)}</li>`;
+      }
+      const [cls, text] = transcriptOf(c);
+      html += `<li class="call${i === state.cur ? ' current' : ''}" id="c${i}"><button type="button" data-i="${i}">`
+            + `<span class="t">${timeOf(c.start)}</span>`
+            + `<span class="d">${dur(c.duration || 0)}</span>`
+            + `<span class="tx ${cls}">${text}</span></button></li>`;
+      prevEnd = c.start + (c.duration || 0);
+    }
+    list.innerHTML = html + '</ol>';
+  }
+
+  function renderPlayer() {
+    const c = state.clips[state.cur];
+    const playing = !audio.paused && !audio.ended;
+    const play = $('#play');
+    play.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+    play.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+
+    let when = '\u00a0', what = '\u00a0';
+    if (state.waiting) {
+      when = 'Live';
+      what = 'Waiting for the next transmission';
+    } else if (c) {
+      when = `${timeOf(c.start)}\u2002${dur(c.duration || 0)}`;
+      const [cls, text] = transcriptOf(c);
+      what = cls ? text : c.transcript;
+    } else if (state.visible.length) {
+      what = 'Press play to start with the first transmission';
+    }
+    $('#nowWhen').textContent = when;
+    $('#nowWhat').textContent = what;
+    if (!c) $('#progBar').style.width = '0';
+
+    $('#speed').innerHTML = SPEEDS.map((s) =>
+      `<button type="button" data-speed="${s}" aria-pressed="${s === state.speed}">${s}×</button>`).join('');
+  }
+
+  function markCurrent() {
+    document.querySelectorAll('.call.current').forEach((el) => el.classList.remove('current'));
+    const el = document.getElementById('c' + state.cur);
+    if (el) {
+      el.classList.add('current');
+      el.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
+    }
+  }
+
+  // --- Playback -------------------------------------------------------------
+  function play(i) {
+    const c = state.clips[i];
+    if (!c) return;
+    state.cur = i;
+    state.waiting = false;
+    audio.src = '/audio/' + c.id;
+    audio.defaultPlaybackRate = state.speed;
+    audio.playbackRate = state.speed;
+    audio.play().catch(() => {});
+    markCurrent();
+    renderStrip();
+    renderPlayer();
+  }
+
+  function next() {
+    const pos = state.visible.indexOf(state.cur);
+    const target = state.visible[pos + 1];
+    if (target !== undefined) { play(target); return; }
+    if (state.day === state.today && !state.q) {
+      state.waiting = true;
+      renderPlayer();
+    }
+  }
+
+  function prev() {
+    if (audio.currentTime > 2 && state.cur >= 0) { audio.currentTime = 0; return; }
+    const pos = state.visible.indexOf(state.cur);
+    const target = pos > 0 ? state.visible[pos - 1] : state.visible[0];
+    if (target !== undefined) play(target);
+  }
+
+  function togglePlay() {
+    if (state.cur < 0 || !state.clips[state.cur]) {
+      if (state.visible.length) play(state.visible[0]);
+      return;
+    }
+    if (state.waiting) { state.waiting = false; renderPlayer(); return; }
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  }
+
+  audio.addEventListener('ended', () => {
+    if ($('#continuous').checked) next();
+    else renderPlayer();
+  });
+  audio.addEventListener('play', renderPlayer);
+  audio.addEventListener('pause', renderPlayer);
+  audio.addEventListener('timeupdate', () => {
+    const p = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+    $('#progBar').style.width = p + '%';
+  });
+  audio.addEventListener('error', () => {
+    if (!audio.src) return;
+    $('#nowWhat').textContent = 'This recording could not be loaded. It may have been deleted.';
+  });
+
+  // --- Events ---------------------------------------------------------------
+  $('#list').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    if (btn.dataset.i !== undefined) { play(Number(btn.dataset.i)); return; }
+    if (btn.dataset.day) {
+      // A result from the all-days search: open that day, filtered to the same words
+      const id = btn.dataset.id;
+      state.allDays = false;
+      $('#allDays').checked = false;
+      state.results = null;
+      if (btn.dataset.day !== state.day) await switchDay(btn.dataset.day);
+      else render();
+      const i = state.clips.findIndex((c) => c.id === id);
+      if (i >= 0) play(i);
+    }
+  });
+
+  $('#board').addEventListener('click', (e) => {
+    if (!state.clips.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const minute = ((e.clientX - rect.left) / rect.width) * 1440;
+    const candidates = state.visible.length ? state.visible : state.clips.map((_, i) => i);
+    let target = candidates.find((i) => minuteOfDay(state.clips[i].start) >= minute - 2);
+    if (target === undefined) target = candidates[candidates.length - 1];
+    if (state.results) { state.results = null; state.allDays = false; $('#allDays').checked = false; render(); }
+    play(target);
+  });
+
+  $('#daySelect').addEventListener('change', (e) => switchDay(e.target.value));
+  $('#olderDay').addEventListener('click', () => {
+    const i = state.days.findIndex((d) => d.date === state.day);
+    if (state.days[i + 1]) switchDay(state.days[i + 1].date);
+  });
+  $('#newerDay').addEventListener('click', () => {
+    const i = state.days.findIndex((d) => d.date === state.day);
+    if (i > 0) switchDay(state.days[i - 1].date);
+  });
+
+  let searchTimer = null;
+  $('#q').addEventListener('input', (e) => {
+    state.q = e.target.value.trim();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      if (state.allDays) runSearch();
+      else { state.results = null; render(); }
+    }, 250);
+  });
+  $('#allDays').addEventListener('change', (e) => {
+    state.allDays = e.target.checked;
+    runSearch();
+  });
+
+  $('#play').addEventListener('click', togglePlay);
+  $('#next').addEventListener('click', next);
+  $('#prev').addEventListener('click', prev);
+  $('#speed').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-speed]');
+    if (!btn) return;
+    state.speed = Number(btn.dataset.speed);
+    audio.defaultPlaybackRate = state.speed;
+    audio.playbackRate = state.speed;
+    renderPlayer();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'j') next();
+    else if (e.key === 'k') prev();
+  });
+
+  // --- Start ----------------------------------------------------------------
+  async function start() {
+    renderTicks();
+    try {
+      await loadDays();
+      const wanted = location.hash.slice(1);
+      const day = state.days.some((d) => d.date === wanted) ? wanted : state.days[0].date;
+      await loadDay(day);
+      renderDaySelect();
+    } catch (e) {
+      notice('The timeline server could not be reached. Check that the scanner-timeline service is running.');
+      return;
+    }
+
+    // Refresh today and pending transcripts every 15 seconds
+    setInterval(async () => {
+      if (state.day !== state.today && state.pending === 0) return;
+      try { await loadDay(state.day, { quiet: true }); notice(''); }
+      catch (e) { notice('Lost the connection to the timeline server. Retrying every 15 seconds.'); }
+    }, 15000);
+
+    // Pick up a new day after midnight, and keep the "now" marker moving
+    setInterval(async () => {
+      try {
+        const before = state.today;
+        await loadDays();
+        if (state.today !== before && state.day === before && !state.clips.length) switchDay(state.today);
+        renderStrip();
+      } catch (e) { /* the 15 s refresh reports connection problems */ }
+    }, 60000);
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>
