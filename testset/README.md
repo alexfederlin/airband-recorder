@@ -40,6 +40,28 @@ days) and copies them into `testset/data/`. Later starts keep the same set.
 - **Replace clip** swaps a clip that's unusable for another random one.
 - What the live timeline produced is hidden under a fold, so it doesn't steer your transcript.
 
+### Listening filters
+
+The **Listening filters** panel cleans up the audio in the browser while you listen, to check whether
+filtering makes transmissions easier to understand. Ctrl+B (or the **Filters on/off** button) switches between
+filtered and original audio mid-clip for A/B comparison. Settings are remembered between clips.
+
+| Control | What it does |
+|---|---|
+| High-pass | Cuts hum and rumble below the set frequency (speech starts around 300 Hz) |
+| Low-pass | Cuts hiss above the set frequency (radio speech ends around 3400 Hz) |
+| Noise reduction | Learns the steady background noise from the quietest parts of the clip and subtracts it. High settings sound "watery" |
+| Volume | Extra gain, mainly to make up for the leveller |
+| Even out loud and quiet speakers | Compressor, so a weak pilot is as loud as the controller |
+
+Presets: **Voice band** (300 to 3400 Hz), **+ level** (adds the compressor and +6 dB), **+ denoise** (adds noise
+reduction at 50 %).
+
+Under the controls the page shows roughly the same chain as an ffmpeg `-af` filter (ffmpeg's `afftdn` and
+`acompressor` aren't identical to the browser's algorithms). When you save a clip with filters on, that string is
+stored as `listen_filter` next to your transcript, so you can later tell which filters helped you and try them on
+Whisper. The filters only change what you hear; the clip files are not modified.
+
 Options: `--count 30` adds clips up to 30, `--min-duration` / `--max-duration` change the length filter,
 `--seed 1` makes the selection repeatable. To start a fresh set, delete `testset/data/`.
 

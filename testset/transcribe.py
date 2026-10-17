@@ -232,6 +232,8 @@ def make_handler(testset, opts):
             ref = body.get("reference")
             clip["reference"] = None if ref is None else " ".join(str(ref).split())
             clip["notes"] = str(body.get("notes") or "").strip()
+            # Filters that were on while you transcribed (ffmpeg -af syntax), if any
+            clip["listen_filter"] = str(body.get("listen_filter") or "")
             clip["updated_at"] = int(time.time())
             testset.save()
             self.send_json(clip)
@@ -304,6 +306,12 @@ label { font-size:13px; color:var(--muted); display:block; margin:12px 0 4px; }
 .prod { font-family:ui-monospace, Consolas, monospace; padding:8px; border:1px dashed var(--line); border-radius:6px; margin-top:8px; }
 kbd { border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 4px; font-size:12px; }
 details { margin-top:8px; } summary { cursor:pointer; color:var(--muted); font-size:13px; }
+.fgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:4px 20px; margin-top:6px; }
+.fgrid label { margin:6px 0 0; }
+.fgrid input[type=range] { width:100%; }
+.fgrid .chk { display:flex; gap:6px; align-items:center; color:var(--text); font-size:14px; }
+.fgrid.off { opacity:.45; }
+code.ff { font-size:12px; word-break:break-all; }
 </style></head>
 <body>
 <header><h1>Whisper test set</h1><span class="progress" id="progress"></span><a id="report" href="/report" target="_blank" hidden>Benchmark report</a></header>
@@ -351,6 +359,21 @@ async function select(id) {
     </div>
   </div>
   <div class="card">
+    <div class="row"><strong>Listening filters</strong>
+      <button class="b" id="f-on" title="Ctrl+B in the text field">Filters off</button>
+      <span class="muted" style="margin-left:8px">Presets</span>
+      ${Object.keys(PRESETS).map(p => `<button class="b preset" data-p="${p}">${p}</button>`).join("")}
+    </div>
+    <div class="fgrid" id="fgrid">
+      <label>High-pass <b id="v-hp"></b><input type="range" id="f-hp" min="0" max="1000" step="50"></label>
+      <label>Low-pass <b id="v-lp"></b><input type="range" id="f-lp" min="1500" max="8000" step="100"></label>
+      <label>Noise reduction <b id="v-dn"></b><input type="range" id="f-dn" min="0" max="100" step="10"></label>
+      <label>Volume <b id="v-g"></b><input type="range" id="f-g" min="0" max="24" step="1"></label>
+      <label class="chk"><input type="checkbox" id="f-comp"> Even out loud and quiet speakers</label>
+    </div>
+    <p class="muted" style="margin:10px 0 0">About the same in ffmpeg: <code class="ff" id="f-ff"></code> <span id="f-busy"></span></p>
+  </div>
+  <div class="card">
     <label for="ref">Your transcript</label>
     <textarea id="ref" rows="4" placeholder="Write exactly what is said…"></textarea>
     <label for="notes">Notes (optional: speaker, quality, why it's hard)</label>
@@ -367,13 +390,13 @@ async function select(id) {
       <div class="prod">${cur.production_transcript == null ? "<em>not transcribed</em>" : escapeHtml(cur.production_transcript) || "<em>empty</em>"}</div></details>
   </div>
   <p class="muted">Keys in the text field: <kbd>Ctrl</kbd>+<kbd>Space</kbd> play/pause · <kbd>Esc</kbd> replay from start ·
-    <kbd>Ctrl</kbd>+<kbd>[</kbd>/<kbd>]</kbd> −/+2 s · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next · <kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> previous/next clip.<br>
+    <kbd>Ctrl</kbd>+<kbd>[</kbd>/<kbd>]</kbd> −/+2 s · <kbd>Ctrl</kbd>+<kbd>B</kbd> filters on/off ·<kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next · <kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> previous/next clip.<br>
     Numbers as digits or words, NATO spelling or letters: both are normalised before scoring. Write <code>??</code> for a word you can't make out; it is not scored.</p>`;
   const a = $("#audio"), ref = $("#ref");
   ref.value = cur.reference || ""; $("#notes").value = cur.notes || "";
   $("#status").textContent = cur.updated_at ? "Saved " + fmtTime(cur.updated_at) : "";
   const rate = parseFloat(localStorage.getItem("rate") || "1");
-  const setRate = s => { a.playbackRate = s; try { localStorage.setItem("rate", s); } catch (e) {}
+  const setRate = s => { a.playbackRate = a.defaultPlaybackRate = s; try { localStorage.setItem("rate", s); } catch (e) {}
     document.querySelectorAll(".speed").forEach(b => b.classList.toggle("on", parseFloat(b.dataset.s) === s)); };
   setRate(rate);
   a.loop = localStorage.getItem("loop") === "1"; $("#loop").classList.toggle("on", a.loop);
@@ -396,7 +419,9 @@ async function select(id) {
     else if (e.ctrlKey && e.key === "Enter") { e.preventDefault(); save(true); }
     else if (e.ctrlKey && e.key === "ArrowDown") { e.preventDefault(); step(1); }
     else if (e.ctrlKey && e.key === "ArrowUp") { e.preventDefault(); step(-1); }
+    else if (e.ctrlKey && e.key.toLowerCase() === "b") { e.preventDefault(); $("#f-on").click(); }
   };
+  attachFilters(a);
   ref.focus();
   a.play().catch(() => {});
 }
@@ -411,7 +436,7 @@ async function save(next, override) {
   const reference = override !== undefined ? override : ref.value.trim();
   if (override === undefined && reference === "" && !confirm("Empty transcript means 'no speech in this clip'. Save it like that?")) return;
   const r = await fetch(`/api/clip/${cur.id}`, { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reference, notes: notes.value }) });
+    body: JSON.stringify({ reference, notes: notes.value, listen_filter: reference === null ? "" : activeFilterString() }) });
   if (!r.ok) { $("#status").textContent = "Save failed: " + r.status; return; }
   Object.assign(cur, await r.json()); dirty = false;
   $("#status").textContent = "Saved " + fmtTime(cur.updated_at);
@@ -431,6 +456,211 @@ async function replace() {
   clips[clips.findIndex(c => c.id === cur.id)] = fresh; dirty = false;
   select(fresh.id);
 }
+
+// --- Listening filters --------------------------------------------------------
+// High-pass, low-pass, compressor and volume run live in Web Audio on the
+// <audio> element. Noise reduction is spectral subtraction on the decoded clip;
+// the result replaces the element's source, so seeking, speed and loop still work.
+
+const LP_OFF = 8000;
+const PRESETS = {
+  "Voice band": { hp: 300, lp: 3400, dn: 0, comp: false, g: 0 },
+  "+ level": { hp: 300, lp: 3400, dn: 0, comp: true, g: 6 },
+  "+ denoise": { hp: 300, lp: 3400, dn: 50, comp: true, g: 6 },
+};
+const F = { s: loadFilterSettings(), ctx: null, audio: null, src: null, orig: null,
+            decoded: null, decodedFor: null, cache: {}, timer: null };
+
+function loadFilterSettings() {
+  const base = { on: false, hp: 300, lp: 3400, dn: 0, comp: false, g: 0 };
+  try { return Object.assign(base, JSON.parse(localStorage.getItem("filters") || "{}")); } catch (e) { return base; }
+}
+
+function attachFilters(a) {
+  if (F.src) { try { F.src.disconnect(); } catch (e) {} }
+  F.audio = a; F.src = null; F.orig = a.src;
+  const s = F.s;
+  $("#f-hp").value = s.hp; $("#f-lp").value = s.lp; $("#f-dn").value = s.dn; $("#f-g").value = s.g; $("#f-comp").checked = s.comp;
+  const read = () => { s.hp = +$("#f-hp").value; s.lp = +$("#f-lp").value; s.dn = +$("#f-dn").value;
+                       s.g = +$("#f-g").value; s.comp = $("#f-comp").checked; s.on = true; applyFilters(); };
+  ["#f-hp", "#f-lp", "#f-dn", "#f-g"].forEach(id => $(id).oninput = read);
+  $("#f-comp").onchange = read;
+  $("#f-on").onclick = () => { s.on = !s.on; applyFilters(); };
+  document.querySelectorAll(".preset").forEach(b => b.onclick = () => {
+    Object.assign(s, PRESETS[b.dataset.p], { on: true });
+    $("#f-hp").value = s.hp; $("#f-lp").value = s.lp; $("#f-dn").value = s.dn; $("#f-g").value = s.g; $("#f-comp").checked = s.comp;
+    applyFilters();
+  });
+  a.addEventListener("play", () => { if (F.ctx) F.ctx.resume(); });
+  applyFilters();
+}
+
+function applyFilters() {
+  const s = F.s;
+  try { localStorage.setItem("filters", JSON.stringify(s)); } catch (e) {}
+  $("#v-hp").textContent = s.hp ? s.hp + " Hz" : "off";
+  $("#v-lp").textContent = s.lp < LP_OFF ? s.lp + " Hz" : "off";
+  $("#v-dn").textContent = s.dn ? s.dn + " %" : "off";
+  $("#v-g").textContent = "+" + s.g + " dB";
+  $("#f-on").textContent = s.on ? "Filters on" : "Filters off";
+  $("#f-on").classList.toggle("on", s.on);
+  $("#fgrid").classList.toggle("off", !s.on);
+  $("#f-ff").textContent = filterString() || "(no filter)";
+  document.querySelectorAll(".preset").forEach(b => b.classList.toggle("on", s.on &&
+    Object.entries(PRESETS[b.dataset.p]).every(([k, v]) => s[k] === v)));
+
+  const live = s.on && (s.hp > 0 || s.lp < LP_OFF || s.comp || s.g > 0);
+  if (live || F.src) wire(live);
+  clearTimeout(F.timer);
+  F.timer = setTimeout(updateSource, s.on && s.dn ? 250 : 0);
+}
+
+function wire(live) {
+  if (!F.ctx) F.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const c = F.ctx, s = F.s;
+  if (!F.src) {
+    F.src = c.createMediaElementSource(F.audio);
+    F.hp = c.createBiquadFilter(); F.hp.type = "highpass"; F.hp.Q.value = 0;
+    F.lp = c.createBiquadFilter(); F.lp.type = "lowpass"; F.lp.Q.value = 0;
+    F.comp = c.createDynamicsCompressor();
+    F.comp.threshold.value = -35; F.comp.knee.value = 10; F.comp.ratio.value = 8;
+    F.comp.attack.value = 0.003; F.comp.release.value = 0.25;
+    F.gain = c.createGain();
+  }
+  [F.src, F.hp, F.lp, F.comp, F.gain].forEach(n => n.disconnect());
+  const chain = [F.src];
+  if (live) {
+    if (s.hp > 0) { F.hp.frequency.value = s.hp; chain.push(F.hp); }
+    if (s.lp < LP_OFF) { F.lp.frequency.value = s.lp; chain.push(F.lp); }
+    if (s.comp) chain.push(F.comp);
+    F.gain.gain.value = Math.pow(10, s.g / 20); chain.push(F.gain);
+  }
+  chain.push(c.destination);
+  for (let i = 0; i < chain.length - 1; i++) chain[i].connect(chain[i + 1]);
+  if (!F.audio.paused) c.resume();
+}
+
+// Switches the <audio> element between the original clip and a denoised copy.
+async function updateSource() {
+  const s = F.s, a = F.audio, clip = cur;
+  let url = F.orig;
+  if (s.on && s.dn) {
+    $("#f-busy").textContent = "· reducing noise…";
+    try { url = await denoisedUrl(clip, s.dn); }
+    catch (e) { $("#f-busy").textContent = "· noise reduction failed: " + e.message; return; }
+    $("#f-busy").textContent = "";
+    if (a !== F.audio || cur !== clip || !(F.s.on && F.s.dn === s.dn)) return; // settings moved on meanwhile
+  } else {
+    $("#f-busy").textContent = "";
+  }
+  if (a.src === url) return;
+  const t = a.currentTime, playing = !a.paused;
+  a.src = url;
+  a.addEventListener("loadedmetadata", () => {
+    a.currentTime = Math.min(t, a.duration || t);
+    if (playing) a.play().catch(() => {});
+  }, { once: true });
+}
+
+async function denoisedUrl(clip, strength) {
+  const key = clip.audio + "|" + strength;
+  if (F.cache[key]) return F.cache[key];
+  if (F.decodedFor !== clip.audio) {
+    if (!F.ctx) F.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const bytes = await fetch("/" + clip.audio).then(r => r.arrayBuffer());
+    F.decoded = await F.ctx.decodeAudioData(bytes);
+    F.decodedFor = clip.audio;
+  }
+  const out = spectralSubtract(F.decoded.getChannelData(0), strength / 100);
+  return F.cache[key] = URL.createObjectURL(wavBlob(out, F.decoded.sampleRate));
+}
+
+// Estimates the noise spectrum from the quietest 15 % of frames and subtracts it.
+function spectralSubtract(x, k) {
+  const N = 1024, H = N / 4, nb = N / 2 + 1;
+  const win = new Float64Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+  const frames = Math.max(1, Math.ceil(Math.max(0, x.length - N) / H) + 1);
+  const xp = new Float64Array((frames - 1) * H + N); xp.set(x);
+  const re = new Float64Array(N), im = new Float64Array(N);
+  const load = f => { for (let i = 0; i < N; i++) { re[i] = xp[f * H + i] * win[i]; im[i] = 0; } fft(re, im, false); };
+
+  const mags = new Float32Array(frames * nb), energy = new Float64Array(frames);
+  for (let f = 0; f < frames; f++) {
+    load(f);
+    for (let b = 0; b < nb; b++) { const m = Math.hypot(re[b], im[b]); mags[f * nb + b] = m; energy[f] += m * m; }
+  }
+  const order = Array.from(energy.keys()).sort((p, q) => energy[p] - energy[q]);
+  const quiet = order.slice(0, Math.max(3, Math.round(frames * 0.15)));
+  const noise = new Float64Array(nb);
+  for (const f of quiet) for (let b = 0; b < nb; b++) noise[b] += mags[f * nb + b] / quiet.length;
+
+  const alpha = 1 + 3 * k;                        // over-subtraction
+  const floor = Math.pow(10, -(6 + 24 * k) / 20); // never cut a bin by more than 6..30 dB
+  const gain = new Float64Array(nb).fill(1);
+  const y = new Float64Array(xp.length);
+  for (let f = 0; f < frames; f++) {
+    load(f);
+    for (let b = 0; b < nb; b++) {
+      const m = mags[f * nb + b] || 1e-12, ratio = noise[b] / m;
+      const g = Math.sqrt(Math.max(1 - alpha * ratio * ratio, floor * floor));
+      gain[b] = 0.5 * gain[b] + 0.5 * g;          // smooth over time against "musical" noise
+      re[b] *= gain[b]; im[b] *= gain[b];
+      if (b > 0 && b < N / 2) { re[N - b] *= gain[b]; im[N - b] *= gain[b]; }
+    }
+    fft(re, im, true);
+    for (let i = 0; i < N; i++) y[f * H + i] += re[i] * win[i] / 1.5; // Hann² at 75 % overlap sums to 1.5
+  }
+  return y.subarray(0, x.length);
+}
+
+function fft(re, im, inverse) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = 2 * Math.PI / len * (inverse ? 1 : -1), wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let j = 0; j < half; j++) {
+        const p = i + j, q = p + half;
+        const tr = re[q] * cr - im[q] * ci, ti = re[q] * ci + im[q] * cr;
+        re[q] = re[p] - tr; im[q] = im[p] - ti; re[p] += tr; im[p] += ti;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+  if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+function wavBlob(samples, rate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 32767, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+// The current settings in ffmpeg -af syntax (approximate: ffmpeg's afftdn
+// and acompressor are not the same algorithms as the browser's).
+function filterString() {
+  const s = F.s, parts = [];
+  if (s.hp > 0) parts.push(`highpass=f=${s.hp}`);
+  if (s.lp < LP_OFF) parts.push(`lowpass=f=${s.lp}`);
+  if (s.dn) parts.push(`afftdn=nr=${Math.round(6 + 24 * s.dn / 100)}`);
+  if (s.comp) parts.push("acompressor=threshold=-35dB:ratio=8:attack=3:release=250");
+  if (s.g > 0) parts.push(`volume=${s.g}dB`);
+  return parts.join(",");
+}
+
+function activeFilterString() { return F.s.on ? filterString() : ""; }
 
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 window.addEventListener("beforeunload", e => { if (dirty) e.preventDefault(); });
