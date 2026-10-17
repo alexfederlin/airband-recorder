@@ -1,0 +1,16 @@
+[
+  {"name": "base",                "model": "base"},
+  {"name": "base no-prompt",      "model": "base",  "prompt": false},
+  {"name": "base greedy",         "model": "base",  "args": ["-bs", "1", "-bo", "1"]},
+  {"name": "base no-fallback",    "model": "base",  "args": ["-nf"]},
+  {"name": "base suppress-nst",   "model": "base",  "args": ["-sns"]},
+  {"name": "base lang-auto",      "model": "base",  "lang": "auto"},
+  {"name": "base.en",             "model": "base.en"},
+  {"name": "tiny",                "model": "tiny"},
+  {"name": "tiny.en",             "model": "tiny.en"},
+  {"name": "small",               "model": "small"},
+  {"name": "small.en",            "model": "small.en"},
+  {"name": "small-q5_1",          "model": "small-q5_1"},
+  {"name": "medium-q5_0",         "model": "medium-q5_0"},
+  {"name": "large-v3-turbo-q5_0", "model": "large-v3-turbo-q5_0"}
+]
