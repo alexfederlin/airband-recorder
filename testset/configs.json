@@ -20,5 +20,12 @@
   {"name": "atc-small q5_0",        "model": "hf:jlvdoorn/whisper-small-atco2-asr", "quantize": "q5_0"},
   {"name": "atc-small.en",          "model": "hf:jlvdoorn/whisper-small.en-atco2-asr"},
   {"name": "atc-small atcosim",     "model": "hf:jlvdoorn/whisper-small-atcosim"},
-  {"name": "atc-medium.en q5_0",    "model": "hf:jacktol/whisper-medium.en-fine-tuned-for-ATC", "quantize": "q5_0"}
+  {"name": "atc-medium.en q5_0",    "model": "hf:jacktol/whisper-medium.en-fine-tuned-for-ATC", "quantize": "q5_0"},
+
+  {"name": "atc-small de",          "model": "hf:jlvdoorn/whisper-small-atco2-asr", "lang": "de", "prompt": "de"},
+  {"name": "atc-small auto",        "model": "hf:jlvdoorn/whisper-small-atco2-asr", "lang": "auto"},
+  {"name": "small de",              "model": "small",       "lang": "de",   "prompt": "de"},
+  {"name": "small auto",            "model": "small",       "lang": "auto"},
+  {"name": "small auto prompt-de",  "model": "small",       "lang": "auto", "prompt": "de"},
+  {"name": "medium-q5_0 de",        "model": "medium-q5_0", "lang": "de",   "prompt": "de"}
 ]

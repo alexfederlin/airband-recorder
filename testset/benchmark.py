@@ -46,6 +46,9 @@ HF = "https://huggingface.co"
 # The live system's settings (timeline/server.py)
 DEFAULT_PROMPT = ("Air traffic control radio. Runway, taxi, holding point, cleared, QNH, "
                   "squawk, wind, contact tower, report, final, downwind.")
+# The same idea for German radio traffic (configs: "prompt": "de")
+GERMAN_PROMPT = ("Flugfunk. Piste, Rollhalt, rollen Sie, Platzrunde, Gegenanflug, Queranflug, "
+                 "Endanflug, QNH, Transponder, Wind, Landung frei, melden Sie, verstanden.")
 DEFAULT_BIN = os.environ.get("WHISPER_BIN", "/usr/local/bin/whisper-cli")
 
 # --- Same clean-up the timeline applies (timeline/server.py, clean_text) ------
@@ -68,9 +71,11 @@ def clean_text(text, prompt):
 
 
 # --- Normalisation before scoring --------------------------------------------
-# Radio speech is written many ways ("QNH 1013" / "QNH one zero one three",
-# "D-EABC" / "Delta Echo Alpha Bravo Charlie"), so both sides are brought into
-# one spoken form: digits as words, letters inside callsigns as NATO words.
+# Radio speech is written many ways ("QNH 1013" / "QNH one zero one three" /
+# "QNH eins null eins drei", "D-EABC" / "Delta Echo Alpha Bravo Charlie"), so
+# both sides are brought into one spoken form: digits as (English) words,
+# letters inside callsigns as NATO words. German digits map to the same words,
+# so "zwo" and "2" and "two" all match.
 
 DIGITS = "zero one two three four five six seven eight nine".split()
 NATO = dict(zip("abcdefghijklmnopqrstuvwxyz", (
@@ -80,17 +85,44 @@ SPOKEN = {
     "niner": "nine", "tree": "three", "fower": "four", "fife": "five", "alfa": "alpha",
     "juliet": "juliett", "x-ray": "xray", "whisky": "whiskey", "point": "decimal",
     "okay": "ok", "o.k.": "ok",
+    # German
+    "null": "zero", "eins": "one", "zwo": "two", "zwei": "two", "drei": "three", "vier": "four",
+    "fünf": "five", "fuenf": "five", "sechs": "six", "sieben": "seven", "acht": "eight",
+    "neun": "nine", "komma": "decimal", "dezimal": "decimal",
 }
+
+# Words that mark a transcript as German, for clips without a language tag
+GERMAN_HINTS = set(
+    "und der die das den dem sie ihr ich wir bitte danke verstanden wiederholen melden rollen "
+    "piste rollhalt platzrunde gegenanflug queranflug endanflug anflug abflug landung start "
+    "frei freigegeben zum zur bei über nach mit fuß grad knoten hektopascal guten morgen tag "
+    "abend tschüss null eins zwo zwei drei vier fünf sechs sieben acht neun komma".split())
+
+
+def guess_language(text):
+    words = re.findall(r"\w+", (text or "").lower())
+    if not words:
+        return "none"
+    return "de" if sum(w in GERMAN_HINTS for w in words) >= 2 else "en"
+
+
+def clip_language(clip):
+    """The language tag from the transcription page, or a guess from the transcript."""
+    return clip.get("lang") or guess_language(clip.get("reference"))
 
 
 def normalize(text, atc=True):
-    t = text.lower()
+    t = text
+    if atc:   # registrations such as D-EABC or OE-ABC, spelled out in NATO words
+        t = re.sub(r"\b([A-Z]{1,2})-([A-Z]{2,4})\b",
+                   lambda m: " ".join(NATO[ch.lower()] for ch in m.group(1) + m.group(2)), t)
+    t = t.lower()
     t = NOISE_TAGS.sub(" ", t)
     t = t.replace("??", " ")                                  # unintelligible marker, not scored
     if atc:
         t = t.replace("x-ray", "xray")
-        t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)             # 1,013 -> 1013
-        t = re.sub(r"(?<=\d)\.(?=\d)", " decimal ", t)        # 121.5 -> 121 decimal 5
+        t = re.sub(r"(?<!\d)(\d{1,2}),(?=\d{3}\b)", r"\1", t)   # 1,013 -> 1013 (thousands)
+        t = re.sub(r"(?<=\d)[.,](?=\d)", " decimal ", t)      # 121.5 / 118,725 -> … decimal …
     t = re.sub(r"[^\w\s']|_", " ", t)                         # punctuation and hyphens
     t = t.replace("'", "")
     words = []
@@ -264,8 +296,10 @@ def download(url, target):
 
 def prompt_of(cfg):
     prompt = cfg.get("prompt", True)
-    if prompt is True:
+    if prompt is True or prompt == "en":
         return DEFAULT_PROMPT
+    if prompt == "de":
+        return GERMAN_PROMPT
     return prompt or ""
 
 
@@ -335,6 +369,7 @@ def score(name, outputs, clips, atc):
     silent = silent_halluc = 0
     seconds = audio = 0.0
     per_clip = {}
+    by_lang = {}
     for clip in clips:
         out = outputs.get(clip["id"])
         if out is None:
@@ -356,6 +391,11 @@ def score(name, outputs, clips, atc):
             seconds += out["seconds"]
             audio += clip.get("duration") or 0
         errs = c["S"] + c["D"] + c["I"]
+        lang = clip_language(clip)
+        if ref and lang != "none":
+            stats = by_lang.setdefault(lang, {"errors": 0, "words": 0})
+            stats["errors"] += errs
+            stats["words"] += len(ref)
         per_clip[clip["id"]] = {"ops": ops, "errors": errs, "words": len(ref), "text": out["text"],
                                 "wer": errs / len(ref) if ref else (1.0 if hyp else 0.0)}
     errors = totals["S"] + totals["D"] + totals["I"]
@@ -370,15 +410,55 @@ def score(name, outputs, clips, atc):
         "sec_per_clip": seconds / len(per_clip) if per_clip and audio else None,
         "rtf": seconds / audio if audio else None,
         "per_clip": per_clip,
+        "by_lang": by_lang,
     }
+
+
+def lang_wer(result, lang):
+    stats = result["by_lang"].get(lang)
+    return stats["errors"] / stats["words"] if stats and stats["words"] else None
+
+
+def languages(results):
+    """Languages with scored words; per-language columns appear only for two or more."""
+    found = sorted({l for r in results for l, s in r["by_lang"].items() if s["words"]})
+    return found if len(found) > 1 else []
+
+
+def best_per_language(results, langs):
+    """What picking the best configuration for each language would score overall:
+    an estimate for detecting the language first and then choosing the model."""
+    if not langs:
+        return None
+    picks, errors, words = {}, 0, 0
+    for lang in langs:
+        scored = [r for r in results if lang_wer(r, lang) is not None]
+        best = min(scored, key=lambda r: lang_wer(r, lang))
+        picks[lang] = (best["name"], lang_wer(best, lang))
+        errors += best["by_lang"][lang]["errors"]
+        words += best["by_lang"][lang]["words"]
+    return {"picks": picks, "wer": errors / words if words else 0.0}
+
+
+def fmt_pct(v):
+    return "-" if v is None else f"{v:.1%}"
+
+
+def describe_combo(combo, results):
+    picks = ", ".join(f"{lang}: {name} ({wer:.1%})" for lang, (name, wer) in combo["picks"].items())
+    return (f"Best per language: {picks}. Choosing the model by language would give {combo['wer']:.1%} WER "
+            f"overall, against {results[0]['wer']:.1%} for the best single configuration "
+            f"(excluding the effect of wrong language detection).")
 
 
 # --- Output ------------------------------------------------------------------------
 
-def print_table(results):
-    rows = [("Configuration", "WER", "CER", "Sub", "Del", "Ins", "Exact", "Noise→text", "s/clip", "RTF")]
+def print_table(results, langs):
+    rows = [("Configuration", "WER") + tuple(f"WER {l}" for l in langs) +
+            ("CER", "Sub", "Del", "Ins", "Exact", "Noise→text", "s/clip", "RTF")]
     for r in results:
-        rows.append((r["name"], f"{r['wer']:.1%}", f"{r['cer']:.1%}", r["sub"], r["del"], r["ins"],
+        rows.append((r["name"], f"{r['wer']:.1%}") + tuple(fmt_pct(lang_wer(r, l)) for l in langs) +
+                    (f"{r['cer']:.1%}", r["sub"], r["del"], r["ins"],
                      f"{r['exact']}/{r['clips']}", f"{r['silent_halluc']}/{r['silent']}",
                      "-" if r["sec_per_clip"] is None else f"{r['sec_per_clip']:.1f}",
                      "-" if r["rtf"] is None else f"{r['rtf']:.2f}"))
@@ -390,15 +470,21 @@ def print_table(results):
     print("\nWER/CER: word/character error rate (lower is better). Exact: clips without any error.\n"
           "Noise→text: clips you marked as no speech where Whisper still wrote something.\n"
           "RTF: processing time / audio length (below 1 keeps up with live traffic).")
+    combo = best_per_language(results, langs)
+    if combo:
+        print("\n" + describe_combo(combo, results))
 
 
-def write_csv(results, path):
+def write_csv(results, path, langs):
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["config", "wer", "cer", "substitutions", "deletions", "insertions", "ref_words",
+        w.writerow(["config", "wer"] + [f"wer_{l}" for l in langs] +
+                   ["cer", "substitutions", "deletions", "insertions", "ref_words",
                     "exact_clips", "clips", "noise_clips", "noise_clips_with_text", "sec_per_clip", "rtf"])
         for r in results:
-            w.writerow([r["name"], round(r["wer"], 4), round(r["cer"], 4), r["sub"], r["del"], r["ins"],
+            w.writerow([r["name"], round(r["wer"], 4)] +
+                       ["" if lang_wer(r, l) is None else round(lang_wer(r, l), 4) for l in langs] +
+                       [round(r["cer"], 4), r["sub"], r["del"], r["ins"],
                         r["ref_words"], r["exact"], r["clips"], r["silent"], r["silent_halluc"],
                         "" if r["sec_per_clip"] is None else round(r["sec_per_clip"], 2),
                         "" if r["rtf"] is None else round(r["rtf"], 3)])
@@ -422,10 +508,15 @@ def fmt_rtf(r):
     return "-" if r["rtf"] is None else f"{r['rtf']:.2f}"
 
 
-def write_report(results, clips, path, configs):
+def write_report(results, clips, path, configs, langs):
     cfg_by_name = {c["name"]: c for c in configs}
+    lang_heads = "".join(f"<th>WER {l}</th>" for l in langs)
+    combo = best_per_language(results, langs)
+    combo_html = f"<p>{html.escape(describe_combo(combo, results))}</p>" if combo else ""
     summary = "".join(
-        f"<tr><td>{html.escape(r['name'])}</td><td>{r['wer']:.1%}</td><td>{r['cer']:.1%}</td>"
+        f"<tr><td>{html.escape(r['name'])}</td><td>{r['wer']:.1%}</td>"
+        + "".join(f"<td>{fmt_pct(lang_wer(r, l))}</td>" for l in langs) +
+        f"<td>{r['cer']:.1%}</td>"
         f"<td>{r['sub']}/{r['del']}/{r['ins']}</td><td>{r['exact']}/{r['clips']}</td>"
         f"<td>{r['silent_halluc']}/{r['silent']}</td>"
         f"<td>{fmt_rtf(r)}</td>"
@@ -441,7 +532,7 @@ def write_report(results, clips, path, configs):
         ref = clip["reference"] or '<span class="muted">(no speech)</span>'
         blocks.append(
             f"<section><h3>#{clip['id']} <span class='muted'>{html.escape(clip['source'])} · "
-            f"{(clip.get('duration') or 0):.1f} s</span></h3>"
+            f"{(clip.get('duration') or 0):.1f} s · {html.escape(clip_language(clip))}</span></h3>"
             f"<audio controls preload='none' src='../{html.escape(clip['audio'])}'></audio>"
             f"<p><b>You:</b> {html.escape(ref) if clip['reference'] else ref}"
             f"{' <span class=muted>(' + html.escape(clip['notes']) + ')</span>' if clip.get('notes') else ''}</p>"
@@ -463,7 +554,8 @@ section {{ border-top:2px solid var(--line); }} audio {{ height:32px; }}
 <h1>Whisper benchmark</h1>
 <p class="muted">{time.strftime('%Y-%m-%d %H:%M')} ·{len(clips)} clips · lower WER/CER is better ·
 <span class="s">substituted</span> (hover for what you heard), <span class="d">missing</span>, <span class="i">extra</span></p>
-<table><tr><th>Configuration</th><th>WER</th><th>CER</th><th>Sub/Del/Ins</th><th>Exact</th><th>Noise→text</th><th>RTF</th><th>Settings</th></tr>{summary}</table>
+<table><tr><th>Configuration</th><th>WER</th>{lang_heads}<th>CER</th><th>Sub/Del/Ins</th><th>Exact</th><th>Noise→text</th><th>RTF</th><th>Settings</th></tr>{summary}</table>
+{combo_html}
 <h2>Per clip</h2>{''.join(blocks)}
 </body></html>"""
     path.write_text(page, encoding="utf-8")
@@ -472,8 +564,10 @@ section {{ border-top:2px solid var(--line); }} audio {{ height:32px; }}
 def describe(cfg):
     if not cfg:
         return "transcript stored by the live timeline"
-    parts = [f"model {cfg['model']}", f"lang {cfg.get('lang', 'en')}",
-             "ATC prompt" if cfg.get("prompt", True) is True else ("custom prompt" if cfg.get("prompt") else "no prompt")]
+    prompt = cfg.get("prompt", True)
+    prompt_label = {True: "ATC prompt", "en": "ATC prompt", "de": "German ATC prompt"}.get(
+        prompt, "custom prompt" if prompt else "no prompt")
+    parts = [f"model {cfg['model']}", f"lang {cfg.get('lang', 'en')}", prompt_label]
     if cfg.get("quantize"):
         parts.append(f"quantised {cfg['quantize']}")
     if cfg.get("args"):
@@ -519,7 +613,11 @@ def main():
     clips = [c for c in testset["clips"] if c.get("reference") is not None]
     if not clips:
         sys.exit("No clips transcribed yet. Transcribe some with transcribe.py first.")
-    print(f"{len(clips)} transcribed clips of {len(testset['clips'])}\n")
+    counts = {}
+    for c in clips:
+        counts[clip_language(c)] = counts.get(clip_language(c), 0) + 1
+    tagged = ", ".join(f"{n} {lang}" for lang, n in sorted(counts.items()))
+    print(f"{len(clips)} transcribed clips of {len(testset['clips'])} ({tagged})\n")
     if not Path(opts.whisper_bin).is_file():
         sys.exit(f"whisper-cli not found at {opts.whisper_bin}; run with: docker compose run --rm benchmark")
 
@@ -539,12 +637,13 @@ def main():
         results.append(score(cfg["name"], outputs, clips, atc))
 
     results.sort(key=lambda r: (r["wer"], r["cer"]))
+    langs = languages(results)
     print()
-    print_table(results)
+    print_table(results, langs)
     out = data / "results"
     out.mkdir(parents=True, exist_ok=True)
-    write_csv(results, out / "summary.csv")
-    write_report(results, clips, out / "report.html", configs)
+    write_csv(results, out / "summary.csv", langs)
+    write_report(results, clips, out / "report.html", configs, langs)
     print(f"\nWrote {out / 'summary.csv'} and {out / 'report.html'}"
           f" (also at /report while transcribe.py runs)")
 

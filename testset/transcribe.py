@@ -234,6 +234,8 @@ def make_handler(testset, opts):
             clip["notes"] = str(body.get("notes") or "").strip()
             # Filters that were on while you transcribed (ffmpeg -af syntax), if any
             clip["listen_filter"] = str(body.get("listen_filter") or "")
+            # Spoken language, "" = not tagged (benchmark.py then guesses from the transcript)
+            clip["lang"] = body.get("lang") if body.get("lang") in ("en", "de") else ""
             clip["updated_at"] = int(time.time())
             testset.save()
             self.send_json(clip)
@@ -337,7 +339,7 @@ function renderList() {
   $("#progress").textContent = `${done} of ${clips.length} transcribed`;
   $("#list").innerHTML = clips.map(c => `<button data-id="${c.id}" class="${cur && cur.id === c.id ? "active" : ""}">
     <span class="mark ${c.reference === "" ? "empty" : ""}">${c.reference === null ? "" : c.reference === "" ? "∅" : "✓"}</span>
-    <span>#${c.id}</span><span class="meta">${(c.duration || 0).toFixed(1)} s</span></button>`).join("");
+    <span>#${c.id}</span><span class="meta">${c.lang ? c.lang.toUpperCase() + " · " : ""}${(c.duration || 0).toFixed(1)} s</span></button>`).join("");
   $("#list").querySelectorAll("button").forEach(b => b.onclick = () => select(b.dataset.id));
 }
 
@@ -378,6 +380,12 @@ async function select(id) {
     <textarea id="ref" rows="4" placeholder="Write exactly what is said…"></textarea>
     <label for="notes">Notes (optional: speaker, quality, why it's hard)</label>
     <input type="text" id="notes">
+    <label>Language</label>
+    <div class="row">
+      <button class="b lang" data-l="en">English</button>
+      <button class="b lang" data-l="de">German</button>
+      <span class="muted">Untagged clips are guessed from the transcript when scoring.</span>
+    </div>
     <div class="row" style="margin-top:12px">
       <button class="b primary" id="savenext">Save &amp; next</button>
       <button class="b" id="save">Save</button>
@@ -391,7 +399,7 @@ async function select(id) {
   </div>
   <p class="muted">Keys in the text field: <kbd>Ctrl</kbd>+<kbd>Space</kbd> play/pause · <kbd>Esc</kbd> replay from start ·
     <kbd>Ctrl</kbd>+<kbd>[</kbd>/<kbd>]</kbd> −/+2 s · <kbd>Ctrl</kbd>+<kbd>B</kbd> filters on/off ·<kbd>Ctrl</kbd>+<kbd>Enter</kbd> save &amp; next · <kbd>Ctrl</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd> previous/next clip.<br>
-    Numbers as digits or words, NATO spelling or letters: both are normalised before scoring. Write <code>??</code> for a word you can't make out; it is not scored.</p>`;
+    Numbers as digits or words (English or German), NATO spelling or letters: all are normalised before scoring. Write <code>??</code> for a word you can't make out; it is not scored.</p>`;
   const a = $("#audio"), ref = $("#ref");
   ref.value = cur.reference || ""; $("#notes").value = cur.notes || "";
   $("#status").textContent = cur.updated_at ? "Saved " + fmtTime(cur.updated_at) : "";
@@ -406,6 +414,12 @@ async function select(id) {
   document.querySelectorAll(".speed").forEach(b => b.onclick = () => setRate(parseFloat(b.dataset.s)));
   $("#loop").onclick = () => { a.loop = !a.loop; $("#loop").classList.toggle("on", a.loop); try { localStorage.setItem("loop", a.loop ? "1" : "0"); } catch (e) {} };
   ref.oninput = $("#notes").oninput = () => { dirty = true; $("#status").textContent = "Unsaved changes"; };
+  const setLang = l => document.querySelectorAll(".lang").forEach(b => b.classList.toggle("on", b.dataset.l === l));
+  setLang(cur.lang || "");
+  document.querySelectorAll(".lang").forEach(b => b.onclick = () => {
+    setLang(b.classList.contains("on") ? "" : b.dataset.l);  // click again to untag
+    ref.oninput();
+  });
   $("#save").onclick = () => save(false);
   $("#savenext").onclick = () => save(true);
   $("#silent").onclick = () => { ref.value = ""; save(true, ""); };
@@ -436,7 +450,8 @@ async function save(next, override) {
   const reference = override !== undefined ? override : ref.value.trim();
   if (override === undefined && reference === "" && !confirm("Empty transcript means 'no speech in this clip'. Save it like that?")) return;
   const r = await fetch(`/api/clip/${cur.id}`, { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reference, notes: notes.value, listen_filter: reference === null ? "" : activeFilterString() }) });
+    body: JSON.stringify({ reference, notes: notes.value, listen_filter: reference === null ? "" : activeFilterString(),
+                           lang: (document.querySelector(".lang.on") || {dataset: {}}).dataset.l || "" }) });
   if (!r.ok) { $("#status").textContent = "Save failed: " + r.status; return; }
   Object.assign(cur, await r.json()); dirty = false;
   $("#status").textContent = "Saved " + fmtTime(cur.updated_at);

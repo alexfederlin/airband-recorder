@@ -63,8 +63,11 @@ and copies them into `data/`. Later starts keep the same set and don't need the 
 - The clip plays when you open it. In the text field: Ctrl+Space play/pause, Esc replay from the start,
   Ctrl+[ / Ctrl+] skip 2 s, Ctrl+Enter save and go to the next clip, Ctrl+↑/↓ previous/next clip.
 - Slower playback (0.6×, 0.75×) and Loop help with callsigns.
-- Write numbers as digits or words and callsigns as letters or NATO words; both are normalised before
-  scoring. Write `??` for a word you can't make out; it isn't scored.
+- Write numbers as digits or words (English or German: "1013", "one zero one three" and "eins null eins drei"
+  all match) and callsigns as letters or NATO words; all are normalised before scoring. Write `??` for a word
+  you can't make out; it isn't scored. Transcribe German traffic in German.
+- **English / German** tags the clip's language, so the benchmark can score each language separately. Untagged
+  clips are guessed from the transcript (German if it has at least two typical German words).
 - **Only noise / no speech** saves an empty transcript. Those clips measure how often Whisper invents text.
 - **Replace clip** swaps a clip that's unusable for another random one.
 - What the live timeline produced is hidden under a fold, so it doesn't steer your transcript.
@@ -106,6 +109,9 @@ prints a ranking, best first. The columns:
 
 - **WER / CER**: word / character error rate over all clips (lower is better). CER is kinder to near
   misses such as "Lufthansa" vs "Lufthansa's".
+- **WER en / WER de**: the same per language, shown when the test set has both. Below the table, "Best
+  per language" estimates what detecting each clip's language and then using the best model for it would
+  score overall, compared with the best single model.
 - **Sub / Del / Ins**: wrong, missing and invented words.
 - **Noise→text**: clips you marked as no speech where Whisper still wrote something.
 - **RTF**: transcription time divided by audio length, on the machine running the benchmark. On the
@@ -137,7 +143,7 @@ Each entry in `configs.json`:
 | `model` | required | See below |
 | `quantize` | none | Quantise the model first, e.g. `q5_0` or `q8_0`: smaller and faster, usually slightly less accurate |
 | `lang` | `en` | `-l` value: `en`, `de` or `auto` |
-| `prompt` | `true` | `true` = the timeline's ATC prompt, `false` = none, or a string for your own |
+| `prompt` | `true` | `true` = the timeline's ATC prompt, `"de"` = a German one with Flugfunk vocabulary, `false` = none, or a string for your own |
 | `args` | `[]` | Extra `whisper-cli` arguments, e.g. `["-bs", "1"]` |
 | `raw` | `false` | `true` skips the timeline's clean-up of noise tags and known hallucinations |
 
@@ -170,6 +176,24 @@ much a bigger ATC model would gain. More fine-tunes:
 
 Converting a model takes a few minutes and downloads its full-precision weights (about 1 GB for Small, 3 GB
 for Medium); only the converted ggml file is kept.
+
+### German traffic
+
+There is no public Whisper fine-tune for German radio traffic. The ATC models above were trained on English
+transcripts; ATCO2 and ATCOSIM have many German-accented speakers, but their German skills may have suffered
+from the fine-tuning. The German entries compare the options:
+
+| Entry | What it tests |
+|---|---|
+| `atc-small de`, `atc-small auto` | How much German the English ATC fine-tune still handles |
+| `small de`, `medium-q5_0 de` | Standard multilingual models with German set and a German Flugfunk prompt |
+| `small auto`, `small auto prompt-de` | Automatic language detection, as mixed traffic would need |
+
+`lang: de` forces German, which helps German clips and hurts English ones. That's why the per-language
+columns and the "Best per language" line matter: if a German configuration wins on German clips and
+`atc-small` on English ones, detecting the language per clip and choosing the model accordingly is worth
+building into the timeline. With only a few German clips in the set, the German figures aren't reliable;
+add clips with `--count` and transcribe the German ones.
 
 ## Using the winner
 
