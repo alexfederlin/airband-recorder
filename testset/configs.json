@@ -12,5 +12,13 @@
   {"name": "small.en",            "model": "small.en"},
   {"name": "small-q5_1",          "model": "small-q5_1"},
   {"name": "medium-q5_0",         "model": "medium-q5_0"},
-  {"name": "large-v3-turbo-q5_0", "model": "large-v3-turbo-q5_0"}
+  {"name": "large-v3-turbo-q5_0", "model": "large-v3-turbo-q5_0"},
+
+  {"name": "atc-base.en",           "model": "hf:jlvdoorn/whisper-base.en-atco2-asr"},
+  {"name": "atc-small",             "model": "hf:jlvdoorn/whisper-small-atco2-asr"},
+  {"name": "atc-small no-prompt",   "model": "hf:jlvdoorn/whisper-small-atco2-asr", "prompt": false},
+  {"name": "atc-small q5_0",        "model": "hf:jlvdoorn/whisper-small-atco2-asr", "quantize": "q5_0"},
+  {"name": "atc-small.en",          "model": "hf:jlvdoorn/whisper-small.en-atco2-asr"},
+  {"name": "atc-small atcosim",     "model": "hf:jlvdoorn/whisper-small-atcosim"},
+  {"name": "atc-medium.en q5_0",    "model": "hf:jacktol/whisper-medium.en-fine-tuned-for-ATC", "quantize": "q5_0"}
 ]

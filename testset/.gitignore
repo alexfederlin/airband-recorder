@@ -1,3 +1,4 @@
 # Recordings and transcripts stay out of the repository (see the legal note in the README)
 data/
 models/
+.env

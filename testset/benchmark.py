@@ -8,13 +8,17 @@ are cached per clip in DATA/results/runs/, so adding a configuration only runs
 the new one. Prints a ranking and writes DATA/results/summary.csv and
 DATA/results/report.html (side-by-side transcripts with the errors marked).
 
-Missing models are downloaded from Hugging Face into ./models/.
+Meant to run in this folder's Docker image (see docker-compose.yml), which has
+whisper.cpp and its model converter; the live recorder's install is not used.
+Models are kept in ./models/. Missing ones are downloaded from Hugging Face;
+fine-tunes in transformers format, such as the ATC models, are converted to
+ggml first.
 
-Uses only the Python standard library.
+Uses only the Python standard library (the converter needs PyTorch).
 
-    python3 benchmark.py                      # all configurations
-    python3 benchmark.py --only tiny,small    # just these (by name)
-    python3 benchmark.py --list               # show configurations
+    docker compose run --rm benchmark                      # all configurations
+    docker compose run --rm benchmark --only tiny,small    # just these (by name)
+    docker compose run --rm benchmark --list               # show configurations
 """
 import argparse
 import csv
@@ -23,6 +27,7 @@ import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -30,14 +35,18 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-HOME = Path.home()
+MODELS = HERE / "models"
+# Where the Dockerfile puts whisper.cpp's tools; override to run elsewhere
+QUANTIZE_BIN = Path(os.environ.get("WHISPER_QUANTIZE", "/usr/local/bin/whisper-quantize"))
+CONVERTER = Path(os.environ.get("WHISPER_CONVERTER", "/opt/convert-h5-to-ggml.py"))
+OPENAI_WHISPER = Path(os.environ.get("OPENAI_WHISPER", "/opt/openai-whisper"))  # has whisper/assets/mel_filters.npz
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin"
+HF = "https://huggingface.co"
 
 # The live system's settings (timeline/server.py)
 DEFAULT_PROMPT = ("Air traffic control radio. Runway, taxi, holding point, cleared, QNH, "
                   "squawk, wind, contact tower, report, final, downwind.")
-DEFAULT_BIN = os.environ.get("WHISPER_BIN", str(HOME / "whisper.cpp/build/bin/whisper-cli"))
-MODEL_DIRS = [HERE / "models", Path("/models"), HOME / "whisper.cpp/models"]
+DEFAULT_BIN = os.environ.get("WHISPER_BIN", "/usr/local/bin/whisper-cli")
 
 # --- Same clean-up the timeline applies (timeline/server.py, clean_text) ------
 
@@ -140,21 +149,99 @@ def char_errors(ref_words, hyp_words):
 
 # --- Running whisper ------------------------------------------------------------
 
-def resolve_model(model, download=True):
-    p = Path(model)
-    if p.suffix == ".bin" and p.is_file():
-        return p
-    for folder in MODEL_DIRS:
-        candidate = folder / f"ggml-{model}.bin"
-        if candidate.is_file():
-            return candidate
-    if not download:
-        return None
-    target = HERE / "models" / f"ggml-{model}.bin"
+def resolve_model(cfg):
+    """Returns the ggml file for a configuration, downloading, converting and
+    quantising it first if needed. "model" can be:
+      small, base.en, large-v3-turbo-q5_0  whisper.cpp's own ggml models
+      hf:<owner>/<repo>                     a fine-tune in transformers format
+      https://…/file.bin                    a ggml file to download
+      /path/to/ggml-model.bin               a local ggml file"""
+    model = cfg["model"]
+    if model.startswith("hf:"):
+        path = convert_hf(model[3:])
+    elif model.startswith(("http://", "https://")):
+        path = MODELS / model.split("?")[0].rsplit("/", 1)[-1]
+        if not path.is_file():
+            download(model, path)
+    elif model.endswith(".bin"):
+        path = Path(model).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"model file not found: {path}")
+    else:
+        path = MODELS / f"ggml-{model}.bin"
+        if not path.is_file():
+            download(MODEL_URL.format(model), path)
+    return quantize(path, cfg["quantize"]) if cfg.get("quantize") else path
+
+
+def quantize(src, qtype):
+    target = MODELS / f"{src.stem}-{qtype}.bin"
+    if target.is_file():
+        return target
+    if not QUANTIZE_BIN.is_file():
+        raise RuntimeError(f"{QUANTIZE_BIN} not found; run the benchmark in the test set's Docker image")
+    print(f"  quantising {src.name} to {qtype}", flush=True)
     target.parent.mkdir(parents=True, exist_ok=True)
-    url = MODEL_URL.format(model)
+    run_checked([str(QUANTIZE_BIN), str(src), str(target), qtype])
+    return target
+
+
+# Files the converter (or transformers' from_pretrained) may read
+HF_FILES = ["config.json", "generation_config.json", "preprocessor_config.json", "vocab.json",
+            "added_tokens.json", "merges.txt", "normalizer.json", "special_tokens_map.json",
+            "tokenizer.json", "tokenizer_config.json"]
+
+
+def convert_hf(repo):
+    """Downloads a transformers-format Whisper fine-tune and converts it with
+    whisper.cpp's models/convert-h5-to-ggml.py (f16 output)."""
+    target = MODELS / f"ggml-{repo.replace('/', '--')}.bin"
+    if target.is_file():
+        return target
+    if not CONVERTER.is_file() or not (OPENAI_WHISPER / "whisper/assets/mel_filters.npz").is_file():
+        raise RuntimeError("hf: models need the converter: build the image with WITH_HF=1")
+    with urllib.request.urlopen(f"{HF}/api/models/{repo}") as resp:
+        files = {s["rfilename"] for s in json.load(resp).get("siblings", [])}
+    weights = next((w for w in ("model.safetensors", "pytorch_model.bin") if w in files), None)
+    if weights is None:
+        raise RuntimeError(f"{repo} has no model.safetensors or pytorch_model.bin")
+    src = MODELS / "hf" / repo.replace("/", "--")
+    for name in [f for f in HF_FILES if f in files] + [weights]:
+        if not (src / name).is_file():
+            download(f"{HF}/{repo}/resolve/main/{name}", src / name)
+
+    # The converter reads vocab.json and added_tokens.json directly, and some
+    # fine-tunes ship only tokenizer.json. Whisper's vocabulary depends only on
+    # the model family, so take it from the matching OpenAI model.
+    config = json.loads((src / "config.json").read_text(encoding="utf-8"))
+    if not (src / "vocab.json").is_file():
+        base = {51864: "openai/whisper-small.en", 51866: "openai/whisper-large-v3"}.get(
+            config.get("vocab_size"), "openai/whisper-small")
+        download(f"{HF}/{base}/resolve/main/vocab.json", src / "vocab.json")
+    if not (src / "added_tokens.json").is_file():
+        (src / "added_tokens.json").write_text("{}", encoding="utf-8")
+
+    print(f"  converting {repo} to ggml", flush=True)
+    out = src / "out"
+    out.mkdir(exist_ok=True)
+    run_checked([sys.executable, str(CONVERTER), str(src), str(OPENAI_WHISPER), str(out)])
+    os.replace(out / "ggml-model.bin", target)
+    shutil.rmtree(src, ignore_errors=True)   # the transformers copy is no longer needed
+    return target
+
+
+def run_checked(cmd):
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        detail = (res.stderr or res.stdout or "").strip().splitlines()
+        raise RuntimeError(f"{Path(cmd[1] if 'python' in Path(cmd[0]).name else cmd[0]).name} failed: "
+                           f"{detail[-1] if detail else res.returncode}")
+
+
+def download(url, target):
+    target.parent.mkdir(parents=True, exist_ok=True)
     print(f"  downloading {url}", flush=True)
-    tmp = target.with_suffix(".part")
+    tmp = target.with_name(target.name + ".part")
     try:
         with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
             total = int(resp.headers.get("Content-Length") or 0)
@@ -187,12 +274,16 @@ def whisper_cmd(cfg, model_path, wav, opts):
            "-l", cfg.get("lang", "en"), "-t", str(cfg.get("threads", opts.threads)), "-nt", "-np"]
     if prompt_of(cfg):
         cmd += ["--prompt", prompt_of(cfg)]
-    return cmd + [str(a) for a in cfg.get("args", [])]
+    cmd += [str(a) for a in cfg.get("args", [])]
+    # Low CPU priority, so a benchmark on the recorder's laptop doesn't hold up live transcription
+    if opts.nice and shutil.which("nice"):
+        cmd = ["nice", "-n", str(opts.nice)] + cmd
+    return cmd
 
 
 def config_key(cfg):
     """Changes whenever anything that affects the output changes."""
-    relevant = {k: cfg.get(k) for k in ("model", "lang", "args")}
+    relevant = {k: cfg.get(k) for k in ("model", "lang", "args", "quantize")}
     relevant["prompt"] = prompt_of(cfg)
     relevant["raw"] = bool(cfg.get("raw"))
     return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[:10]
@@ -211,7 +302,7 @@ def run_config(cfg, clips, data, opts):
 
     todo = [c for c in clips if cache["clips"].get(c["id"], {}).get("source") != c["source"]]
     if todo:
-        model_path = resolve_model(cfg["model"])
+        model_path = resolve_model(cfg)
         for n, clip in enumerate(todo, 1):
             wav = data / clip["audio"]
             started = time.time()
@@ -383,6 +474,8 @@ def describe(cfg):
         return "transcript stored by the live timeline"
     parts = [f"model {cfg['model']}", f"lang {cfg.get('lang', 'en')}",
              "ATC prompt" if cfg.get("prompt", True) is True else ("custom prompt" if cfg.get("prompt") else "no prompt")]
+    if cfg.get("quantize"):
+        parts.append(f"quantised {cfg['quantize']}")
     if cfg.get("args"):
         parts.append(" ".join(map(str, cfg["args"])))
     if cfg.get("raw"):
@@ -398,7 +491,9 @@ def main():
     p.add_argument("--configs", default=str(HERE / "configs.json"))
     p.add_argument("--only", help="comma-separated configuration names to run")
     p.add_argument("--whisper-bin", default=DEFAULT_BIN)
-    p.add_argument("--threads", default=os.environ.get("WHISPER_THREADS", "4"))
+    p.add_argument("--threads", default=os.environ.get("WHISPER_THREADS") or str(os.cpu_count() or 4))
+    p.add_argument("--nice", type=int, default=10,
+                   help="CPU priority for whisper, 0-19; higher is gentler on the live recorder (default 10, 0 = off)")
     p.add_argument("--force", action="store_true", help="ignore cached results")
     p.add_argument("--no-atc-normalize", action="store_true",
                    help="score on lower-cased words only, without digit/NATO normalisation")
@@ -426,7 +521,7 @@ def main():
         sys.exit("No clips transcribed yet. Transcribe some with transcribe.py first.")
     print(f"{len(clips)} transcribed clips of {len(testset['clips'])}\n")
     if not Path(opts.whisper_bin).is_file():
-        sys.exit(f"whisper-cli not found at {opts.whisper_bin}; pass --whisper-bin")
+        sys.exit(f"whisper-cli not found at {opts.whisper_bin}; run with: docker compose run --rm benchmark")
 
     atc = not opts.no_atc_normalize
     results = []

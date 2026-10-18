@@ -1,0 +1,42 @@
+# Whisper test set, separate from the recorder's containers: its own image and
+# its own data in this folder. Run the commands in this folder (testset/).
+#
+#   docker compose up -d transcribe                 transcription page on port 8091
+#   docker compose run --rm benchmark               score all configurations
+#   docker compose run --rm benchmark --only atc-small,small
+#
+# Settings (environment or a .env file next to this one):
+#   ARCHIVE   recorder archive to pick clips from (default ~/scanner-archive)
+#   UID, GID  owner of the files written to data/ and models/ (default 1000)
+#   WITH_HF   1 = include the converter for hf: models (default), 0 = smaller image
+
+name: whisper-testset
+
+x-common: &common
+  image: whisper-testset
+  build:
+    context: .
+    network: host          # build steps use the host's DNS (Docker's own can fail)
+    args:
+      WITH_HF: ${WITH_HF:-1}
+  init: true
+  user: "${UID:-1000}:${GID:-1000}"
+  environment:
+    TZ: ${TZ:-Europe/Berlin}
+    WHISPER_THREADS: ${WHISPER_THREADS:-}
+    ARCHIVE: /archive
+  volumes:
+    - .:/testset
+    - ${ARCHIVE:-${HOME}/scanner-archive}:/archive:ro
+
+services:
+  transcribe:
+    <<: *common
+    entrypoint: ["python3", "transcribe.py"]
+    ports:
+      - "8091:8091"
+
+  benchmark:
+    <<: *common
+    entrypoint: ["python3", "benchmark.py"]
+    profiles: ["benchmark"]   # not started by "up"; use "docker compose run"
