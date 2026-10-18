@@ -33,7 +33,13 @@ WHISPER_PROMPT = os.environ.get(
     "squawk, wind, contact tower, report, final, downwind.",
 )
 KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "30"))         # 0 = keep forever
+# 1 = transcripts made with another model or language are redone in the
+# background, after new clips (e.g. the whole archive after a model change)
+RETRANSCRIBE = os.environ.get("RETRANSCRIBE", "1") == "1"
 # ------------------------------------------------------------------------------
+
+# Stored with each transcript, so a model change can be detected later
+MODEL_TAG = f"{Path(WHISPER_MODEL).name}|{WHISPER_LANG}"
 
 PAGE = Path(__file__).resolve().parent / "index.html"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -46,7 +52,7 @@ HALLUCINATIONS = {
     "thanks for watching.", "bye.", "bye", ".",
 }
 
-STATE = {"transcription": "starting", "pending": 0, "error": None}
+STATE = {"transcription": "starting", "pending": 0, "redo": 0, "error": None}
 
 
 def log(msg):
@@ -134,15 +140,22 @@ def search(query, limit=300):
 # --- Background transcription ------------------------------------------------
 
 def find_pending():
-    pending = []
+    """Returns (new, redo): clips without a transcript, and (with RETRANSCRIBE)
+    clips whose transcript came from another model or language. Newest first."""
+    new, redo = [], []
     for folder in day_dirs():
         for meta_path in folder.glob("*.json"):
             meta = load_meta(meta_path)
-            if (meta is not None and clip_status(meta) == "pending"
-                    and meta_path.with_suffix(".wav").exists()):
-                pending.append((meta.get("start", 0), meta_path))
-    pending.sort(key=lambda p: p[0], reverse=True)   # newest first
-    return [p[1] for p in pending]
+            if meta is None or not meta_path.with_suffix(".wav").exists():
+                continue
+            status = clip_status(meta)
+            if status == "pending":
+                new.append((meta.get("start", 0), meta_path))
+            elif RETRANSCRIBE and status == "done" and meta.get("transcript_model") != MODEL_TAG:
+                redo.append((meta.get("start", 0), meta_path))
+    new.sort(key=lambda p: p[0], reverse=True)
+    redo.sort(key=lambda p: p[0], reverse=True)
+    return [p[1] for p in new], [p[1] for p in redo]
 
 
 def clean_text(text):
@@ -181,8 +194,35 @@ def cleanup_old_days():
             log(f"Deleted recordings from {folder.name} (older than {KEEP_DAYS} days)")
 
 
+def transcribe_clip(meta_path, redo=False):
+    wav = meta_path.with_suffix(".wav")
+    started = time.time()
+    try:
+        text = transcribe(wav)
+        meta = load_meta(meta_path) or {}
+        meta["transcript"] = text
+        meta["transcript_model"] = MODEL_TAG
+        meta["transcribed_at"] = int(time.time())
+        meta.pop("retranscribe_error", None)
+        save_meta(meta_path, meta)
+        STATE["error"] = None
+        log(f"{'Re-transcribed' if redo else 'Transcribed'} {meta_path.parent.name}/{wav.name} "
+            f"in {time.time() - started:.1f} s: {text[:60]}")
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        meta = load_meta(meta_path) or {}
+        if redo:
+            # Keep the old transcript; don't try this clip again with this model
+            meta["retranscribe_error"] = str(exc)[:300]
+            meta["transcript_model"] = MODEL_TAG
+        else:
+            meta["transcript_error"] = str(exc)[:300]
+        save_meta(meta_path, meta)
+        STATE["error"] = str(exc)[:300]
+        log(f"Transcription failed for {wav.name}: {exc}")
+
+
 def worker():
-    available = Path(WHISPER_BIN).is_file() and Path(WHISPER_MODEL).is_file()
+    available =Path(WHISPER_BIN).is_file() and Path(WHISPER_MODEL).is_file()
     STATE["transcription"] = "on" if available else "off"
     if not available:
         log(f"Transcription off: whisper.cpp not found ({WHISPER_BIN}, {WHISPER_MODEL})")
@@ -194,32 +234,18 @@ def worker():
                 cleanup_old_days()
                 last_cleanup = time.time()
 
-            pending = find_pending()
-            STATE["pending"] = len(pending)
-            if not available or not pending:
+            new, redo = find_pending()
+            STATE["pending"], STATE["redo"] = len(new), len(redo)
+            if not available or not (new or redo):
                 time.sleep(60 if not available else 5)
                 continue
 
-            # Work through a few clips, then rescan so new ones get priority
-            for meta_path in pending[:5]:
-                wav = meta_path.with_suffix(".wav")
-                started = time.time()
-                try:
-                    text = transcribe(wav)
-                    meta = load_meta(meta_path) or {}
-                    meta["transcript"] = text
-                    meta["transcribed_at"] = int(time.time())
-                    save_meta(meta_path, meta)
-                    STATE["error"] = None
-                    log(f"Transcribed {meta_path.parent.name}/{wav.name} "
-                        f"in {time.time() - started:.1f} s: {text[:60]}")
-                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                    meta = load_meta(meta_path) or {}
-                    meta["transcript_error"] = str(exc)[:300]
-                    save_meta(meta_path, meta)
-                    STATE["error"] = str(exc)[:300]
-                    log(f"Transcription failed for {wav.name}: {exc}")
-                STATE["pending"] = max(0, STATE["pending"] - 1)
+            # Work through a few new clips, or one old one, then rescan so new
+            # clips always come first
+            for meta_path in new[:5] or redo[:1]:
+                transcribe_clip(meta_path, redo=not new)
+                key = "redo" if not new else "pending"
+                STATE[key] = max(0, STATE[key] - 1)
         except Exception as exc:  # keep the worker alive whatever happens
             log(f"Worker error: {exc}")
             time.sleep(10)
@@ -255,6 +281,7 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "transcription": STATE["transcription"],
             "pending": STATE["pending"],
+            "retranscribe": STATE["redo"],
             "transcription_error": STATE["error"],
         }
 

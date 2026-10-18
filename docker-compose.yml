@@ -1,20 +1,25 @@
 # Starts Rdio Scanner, the recorder and the timeline.
-# Settings come from the .env file next to this one (copy .env.example).
-# Recordings and Rdio Scanner's database are kept in ./data.
+# Settings come from the .env file next to this one (copy .env.example, or run
+# ./migrate-from-bare-metal.sh when moving from the systemd install).
+# Recordings and Rdio Scanner's database are kept in ./data unless .env points
+# ARCHIVE_DIR / RDIO_DATA elsewhere.
 
 services:
   rdio-scanner:
     image: chuot/rdio-scanner:latest
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"   # owner of RDIO_DATA, as Rdio Scanner's docs recommend
     ports:
       - "3000:3000"
     environment:
       TZ: ${TZ:-Europe/Berlin}
     volumes:
-      - ./data/rdio-scanner:/app/data
+      - ${RDIO_DATA:-./data/rdio-scanner}:/app/data
 
   recorder:
-    build: ./recorder
+    build:
+      context: ./recorder
+      network: host          # build steps use the host's DNS (Docker's own can fail)
     restart: unless-stopped
     init: true
     depends_on:
@@ -25,6 +30,8 @@ services:
       TZ: ${TZ:-Europe/Berlin}
       DEVICE: ${DEVICE:-plughw:CARD=Device,DEV=0}
       KEY: ${KEY:-}
+      SYSTEM: ${SYSTEM:-1}
+      TALKGROUP: ${TALKGROUP:-1}
       FREQ: ${FREQ:-118000000}
       THRESHOLD: ${THRESHOLD:-2%}
       HANG: ${HANG:-2.0}
@@ -34,10 +41,12 @@ services:
       ARCHIVE: /data/archive
     volumes:
       - ./data:/data
+      - ${ARCHIVE_DIR:-./data/archive}:/data/archive
 
   timeline:
     build:
       context: ./timeline
+      network: host
       args:
         WHISPER_MODEL_NAME: ${WHISPER_MODEL_NAME:-base}
     restart: unless-stopped
@@ -48,6 +57,11 @@ services:
       TZ: ${TZ:-Europe/Berlin}
       WHISPER_LANG: ${WHISPER_LANG:-en}
       WHISPER_THREADS: ${WHISPER_THREADS:-4}
+      # The model built into the image, unless .env names a file in ./models
+      # (mounted at /extra-models), e.g. an ATC fine-tune from the test set
+      WHISPER_MODEL: ${WHISPER_MODEL:-/models/ggml-${WHISPER_MODEL_NAME:-base}.bin}
+      RETRANSCRIBE: ${RETRANSCRIBE:-1}
       KEEP_DAYS: ${KEEP_DAYS:-30}
     volumes:
-      - ./data/archive:/data/archive
+      - ${ARCHIVE_DIR:-./data/archive}:/data/archive
+      - ./models:/extra-models:ro

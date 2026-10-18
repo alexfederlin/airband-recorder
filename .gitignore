@@ -3,8 +3,10 @@
 !*.conf.example
 .env
 
-# Docker data folder (recordings, Rdio Scanner database)
+# Docker data folder (recordings, Rdio Scanner database) and model files
 data/
+models/
+*.bin
 
 # Recordings and runtime data
 *.wav

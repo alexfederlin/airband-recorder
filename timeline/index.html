@@ -256,7 +256,7 @@
     results: null,
     q: '', allDays: false,
     speed: 1, waiting: false,
-    transcription: 'on', pending: 0, transcriptionError: null,
+    transcription: 'on', pending: 0, retranscribe: 0, transcriptionError: null,
     signature: '',
   };
   const audio = new Audio();
@@ -315,6 +315,7 @@
   function takeStatus(d) {
     state.transcription = d.transcription;
     state.pending = d.pending;
+    state.retranscribe = d.retranscribe || 0;
     state.transcriptionError = d.transcription_error;
     if (d.today) state.today = d.today;
   }
@@ -422,6 +423,9 @@
       parts.push('<span class="warn">Transcription off: whisper.cpp not found</span>');
     } else if (state.pending > 0) {
       parts.push(`<span>${state.pending} waiting for transcription</span>`);
+    }
+    if (state.transcription !== 'off' && state.retranscribe > 0) {
+      parts.push(`<span>${state.retranscribe} older clips to re-transcribe with the current model</span>`);
     }
     $('#stats').innerHTML = parts.join('');
   }
@@ -704,7 +708,7 @@
 
     // Refresh today and pending transcripts every 15 seconds
     setInterval(async () => {
-      if (state.day !== state.today && state.pending === 0) return;
+      if (state.day !== state.today && state.pending === 0 && state.retranscribe === 0) return;
       try { await loadDay(state.day, { quiet: true }); notice(''); }
       catch (e) { notice('Lost the connection to the timeline server. Retrying every 15 seconds.'); }
     }, 15000);

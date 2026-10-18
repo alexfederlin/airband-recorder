@@ -18,16 +18,19 @@ Built for a ThinkPad Yoga 12 running Xubuntu (hostname `adsb`), a Quansheng UV-K
 | `.env.example` | Settings template; copy to `.env` |
 | `recorder/` | Recorder script and its `Dockerfile` |
 | `timeline/` | Timeline server, web page and its `Dockerfile` (builds whisper.cpp and downloads the speech model) |
+| `testset/` | Separate tool to compare Whisper models on hand-transcribed clips (see `testset/README.md`) |
+| `migrate-from-bare-metal.sh` | One-time move from the systemd install to Docker |
 | `systemd/` | Unit files for running without Docker (see the end of this file) |
 
-Created at runtime in `./data`, not in the repository:
+Created at runtime, not in the repository:
 
 | Path | What it is |
 | --- | --- |
-| `data/archive/YYYY-MM-DD/` | Archived clips: `HHMMSS-n.wav` plus `HHMMSS-n.json` (time, duration, transcript) |
+| `data/archive/YYYY-MM-DD/` | Archived clips: `HHMMSS-n.wav` plus `HHMMSS-n.json` (time, duration, transcript, model). `ARCHIVE_DIR` can put it elsewhere |
 | `data/recordings/` | Recorder's temporary working folder |
 | `data/recordings/failed/` | Clips whose Rdio Scanner upload failed |
-| `data/rdio-scanner/` | Rdio Scanner database and settings |
+| `data/rdio-scanner/` | Rdio Scanner database and settings (`RDIO_DATA` can put it elsewhere) |
+| `models/` | Extra speech models for the timeline, such as an ATC fine-tune from the test set |
 
 The recorder writes each clip's `.wav` first and its `.json` last, so the timeline only ever shows complete recordings.
 
@@ -35,11 +38,26 @@ The recorder writes each clip's `.wav` first and its `.json` last, so the timeli
 
 1. **Docker:** `sudo apt install docker.io docker-compose-v2 alsa-utils git`, then `sudo usermod -aG docker $USER` and log in again.
 2. **Sound card:** check that `arecord -l` lists the USB card. Set the capture level with `alsamixer -c <card>` (F4 for capture) and test with `arecord -D plughw:CARD=Device,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 test.wav`. The desktop audio system must not hold the card: in `pavucontrol`, Configuration tab, set the USB card's profile to Off.
-3. **Get the code and settings:** `git clone` this repository, `cd` into it, run `cp .env.example .env` and fill in `DEVICE` and `FREQ`. Leave `KEY` empty for now.
+3. **Get the code and settings:** `git clone` this repository, `cd` into it, run `cp .env.example .env` and fill in `DEVICE` and `FREQ`. Leave `KEY` empty for now. Run `mkdir -p data/rdio-scanner models` so these folders belong to you rather than root.
 4. **Start:** `docker compose up -d --build`. The first build compiles whisper.cpp and downloads the speech model, which takes a while on the laptop.
 5. **Rdio Scanner:** open `http://adsb.local:3000/admin` (first password `rdio-scanner`), change the password, create system 1 and talkgroup 1, create an API key and enable audio conversion. Put the key into `KEY` in `.env` and run `docker compose up -d` again.
 
 The containers restart automatically, including after a reboot.
+
+### Moving from the systemd install
+
+If the recorder ran on bare metal before (`systemd/`), the Docker setup can take over its data:
+
+1. Stop the old services: `sudo systemctl disable --now rdio-scanner scanner-recorder scanner-timeline`.
+2. In the repository folder, as your normal user: `./migrate-from-bare-metal.sh`. It writes `.env` from
+   `~/.config/scanner-recorder.conf`, keeps the recordings where they are (`ARCHIVE_DIR=~/scanner-archive`),
+   copies Rdio Scanner's database (systems, talkgroups, API key, calls) from `/opt/rdio-scanner/` to
+   `data/rdio-scanner/`, and copies the ATC model from `testset/models/` to `models/` if the test set made it.
+   It only copies, so the old files stay as a backup.
+3. `docker compose up -d --build`, then skip steps 3 and 5 above: Rdio Scanner keeps its settings and the API key.
+
+Once everything works, the old `/opt/rdio-scanner/`, `~/scanner-timeline/`, `~/scanner-recorder/` and
+`~/whisper.cpp/` can go.
 
 ### Recorder settings
 
@@ -53,7 +71,10 @@ Set these in `.env`, then run `docker compose up -d`. An empty `KEY` skips the R
 | `THRESHOLD` | `2%` | Audio level that counts as a transmission |
 | `HANG` | `2.0` | Seconds of silence that end a clip |
 | `MIN_LEN` | `0.5` | Clips shorter than this are discarded |
+| `SYSTEM`, `TALKGROUP` | `1` | Rdio Scanner system and talkgroup IDs |
 | `TZ` | `Europe/Berlin` | Time zone for clip times and day folders |
+| `ARCHIVE_DIR` | `./data/archive` | Where clips and transcripts are kept (full path) |
+| `RDIO_DATA` | `./data/rdio-scanner` | Rdio Scanner's database folder |
 
 ### Timeline settings
 
@@ -61,10 +82,17 @@ Set these in `.env`, then run `docker compose up -d`. An empty `KEY` skips the R
 | --- | --- | --- |
 | `WHISPER_LANG` | `en` | Transcription language; `auto` if German traffic is common |
 | `WHISPER_MODEL_NAME` | `base` | Speech model built into the image; `tiny` is faster, `small` more accurate. Needs `docker compose up -d --build` after a change |
+| `WHISPER_MODEL` | built-in model | A model file in `./models` instead, as `/extra-models/<file>`, e.g. `/extra-models/ggml-jlvdoorn--whisper-small-atco2-asr.bin` (the ATC fine-tune that won the test set). Needs `docker compose up -d` after a change |
+| `RETRANSCRIBE` | `1` | Redo transcripts made with another model or language, in the background after new clips; `0` keeps them |
 | `WHISPER_THREADS` | `4` | CPU threads for transcription |
 | `KEEP_DAYS` | `30` | Days of recordings to keep; `0` keeps everything |
 
 If the "waiting for transcription" count in the timeline header keeps growing, switch to a smaller model. An hour of radio traffic takes about 115 MB of disk space.
+
+Each transcript records the model and language that made it. After a change, the header shows "N older clips to
+re-transcribe" and the timeline works through the archive newest first, one old clip at a time between new ones,
+so live clips never wait behind the backlog. On the laptop's dual-core CPU a Small model takes a while for a full
+archive; the old transcript stays visible until its replacement is ready.
 
 ### Radio settings (UV-K5(8))
 
@@ -96,7 +124,7 @@ Run these in the repository folder. The service names are `recorder`, `timeline`
 | `git pull && docker compose up -d --build` | Update to the latest code |
 | `docker compose pull rdio-scanner && docker compose up -d` | Update Rdio Scanner |
 
-Files in `./data` are owned by root because the containers write them; use `sudo` to delete them by hand.
+Files the recorder and timeline write are owned by root, including new ones in `ARCHIVE_DIR`; use `sudo` to delete them by hand.
 
 ## Troubleshooting
 
@@ -111,6 +139,9 @@ Files in `./data` are owned by root because the containers write them; use `sudo
 | First syllable cut off | Battery save is on in the radio |
 | Timeline: "Transcription off: whisper.cpp not found" | The image build failed partway; run `docker compose build --no-cache timeline` and check its output |
 | Timeline crashes with "Illegal instruction" | The image was built on a different computer. Build it on the laptop itself |
+| Timeline: "Transcription off" with `WHISPER_MODEL` set | The file isn't in `./models`; check the name with `ls models/` |
+| Rdio Scanner: "permission denied" on its database | `RDIO_DATA` must belong to the user in `UID`/`GID` (default 1000); fix with `sudo chown -R $(id -u):$(id -g) data/rdio-scanner` |
+| Build: "Could not resolve host" | Builds already use the host's network; check the laptop's own internet connection |
 
 The recorder estimates each clip's start time from when it ended, so times can be off by a second or two.
 

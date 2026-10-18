@@ -224,6 +224,13 @@ add German clips with **Browse archive** (see "Adding clips").
 ## Using the winner
 
 The benchmark runs `whisper-cli` the same way the timeline does (`-nt -np`, same prompt and clean-up), so a
-winning model file from `models/` (e.g. `ggml-jlvdoorn--whisper-small-atco2-asr-q5_0.bin`) works in the
-timeline as is: point the timeline's `WHISPER_MODEL` setting at it. Settings other than the model, language and
+winning model file from `testset/models/` works in the timeline as is. Copy it to the repository's top-level
+`models/` folder and set `WHISPER_MODEL=/extra-models/<file>` in the top-level `.env`, e.g.:
+
+```bash
+cp testset/models/ggml-jlvdoorn--whisper-small-atco2-asr.bin models/
+```
+
+Then `docker compose up -d` in the repository folder. With `RETRANSCRIBE=1` (the default) the timeline also
+redoes the existing archive with the new model in the background. Settings other than the model, language and
 prompt need a change in `timeline/server.py`.
