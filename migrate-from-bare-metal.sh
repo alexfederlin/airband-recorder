@@ -95,6 +95,7 @@ Next:
   docker compose logs -f recorder     # should say "Listening on ..." and log clips
   docker compose logs -f timeline     # transcription and re-transcription progress
 
-Then check http://adsb.local:8090 (timeline) and http://adsb.local:3000 (Rdio Scanner).
+Then check http://adsb.local:8090 (timeline). Rdio Scanner is off by default; its
+database was copied, so adding COMPOSE_PROFILES=rdio to .env brings it back as it was.
 Clips whose Rdio upload failed on bare metal are still in ~/scanner-recordings/failed/.
 EOF

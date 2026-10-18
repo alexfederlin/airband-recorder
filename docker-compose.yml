@@ -1,12 +1,15 @@
-# Starts Rdio Scanner, the recorder and the timeline.
+# Starts the recorder and the timeline, and Rdio Scanner if enabled.
 # Settings come from the .env file next to this one (copy .env.example, or run
 # ./migrate-from-bare-metal.sh when moving from the systemd install).
 # Recordings and Rdio Scanner's database are kept in ./data unless .env points
 # ARCHIVE_DIR / RDIO_DATA elsewhere.
 
 services:
+  # Optional: only started with COMPOSE_PROFILES=rdio in .env
+  # (or "docker compose --profile rdio up -d")
   rdio-scanner:
     image: chuot/rdio-scanner:latest
+    profiles: ["rdio"]
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"   # owner of RDIO_DATA, as Rdio Scanner's docs recommend
     ports:
@@ -22,8 +25,6 @@ services:
       network: host          # build steps use the host's DNS (Docker's own can fail)
     restart: unless-stopped
     init: true
-    depends_on:
-      - rdio-scanner
     devices:
       - /dev/snd:/dev/snd
     environment:

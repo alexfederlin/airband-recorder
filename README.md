@@ -4,9 +4,9 @@ Records an airport frequency from a scanner, splits it into one clip per transmi
 
 - **Recorder** (`recorder/`): captures the scanner audio from a USB sound card, cuts it into clips, archives each clip and uploads it to [Rdio Scanner](https://github.com/chuot/rdio-scanner).
 - **Timeline** (`timeline/`): a small Python server (standard library only) that transcribes archived clips with [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and serves a day-by-day timeline with search and continuous playback.
-- **Rdio Scanner**: live feed and call archive, run from its official Docker image.
+- **Rdio Scanner** (optional): live feed with near-instant playback, mobile apps and its own call archive, run from its official Docker image. Off by default; see [Rdio Scanner](#rdio-scanner-optional).
 
-All three run as containers, started with one `docker compose` command.
+All of them run as containers, started with one `docker compose` command.
 
 Built for a ThinkPad Yoga 12 running Xubuntu (hostname `adsb`), a Quansheng UV-K5(8) and a C-Media USB sound card.
 
@@ -40,9 +40,23 @@ The recorder writes each clip's `.wav` first and its `.json` last, so the timeli
 2. **Sound card:** check that `arecord -l` lists the USB card. Set the capture level with `alsamixer -c <card>` (F4 for capture) and test with `arecord -D plughw:CARD=Device,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 test.wav`. The desktop audio system must not hold the card: in `pavucontrol`, Configuration tab, set the USB card's profile to Off.
 3. **Get the code and settings:** `git clone` this repository, `cd` into it, run `cp .env.example .env` and fill in `DEVICE` and `FREQ`. Leave `KEY` empty for now. Run `mkdir -p data/rdio-scanner models` so these folders belong to you rather than root.
 4. **Start:** `docker compose up -d --build`. The first build compiles whisper.cpp and downloads the speech model, which takes a while on the laptop.
-5. **Rdio Scanner:** open `http://adsb.local:3000/admin` (first password `rdio-scanner`), change the password, create system 1 and talkgroup 1, create an API key and enable audio conversion. Put the key into `KEY` in `.env` and run `docker compose up -d` again.
 
 The containers restart automatically, including after a reboot.
+
+### Rdio Scanner (optional)
+
+The timeline covers the archive, search and live listening (it picks up new clips every 3 seconds). Rdio Scanner
+adds a near-instant live feed for many listeners and its iOS/Android apps, at the cost of a second copy of every
+clip and CPU for converting them. To turn it on:
+
+1. Add `COMPOSE_PROFILES=rdio` to `.env` and run `docker compose up -d`.
+2. Open `http://adsb.local:3000/admin` (first password `rdio-scanner`), change the password, create system 1 and
+   talkgroup 1, create an API key and enable audio conversion.
+3. Put the key into `KEY` in `.env` and run `docker compose up -d` again.
+
+To turn it off again, remove `COMPOSE_PROFILES=rdio` and run `docker compose up -d --remove-orphans`. Its database
+stays in `data/rdio-scanner/`. If `KEY` is still set, the recorder notes once that Rdio Scanner isn't reachable and
+just archives.
 
 ### Moving from the systemd install
 
@@ -54,7 +68,8 @@ If the recorder ran on bare metal before (`systemd/`), the Docker setup can take
    copies Rdio Scanner's database (systems, talkgroups, API key, calls) from `/opt/rdio-scanner/` to
    `data/rdio-scanner/`, and copies the ATC model from `testset/models/` to `models/` if the test set made it.
    It only copies, so the old files stay as a backup.
-3. `docker compose up -d --build`, then skip steps 3 and 5 above: Rdio Scanner keeps its settings and the API key.
+3. `docker compose up -d --build` (skip step 3 above). If you turn Rdio Scanner on, it keeps its settings and API
+   key, so only step 1 of [Rdio Scanner](#rdio-scanner-optional) is needed.
 
 Once everything works, the old `/opt/rdio-scanner/`, `~/scanner-timeline/`, `~/scanner-recorder/` and
 `~/whisper.cpp/` can go.
@@ -66,7 +81,7 @@ Set these in `.env`, then run `docker compose up -d`. An empty `KEY` skips the R
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `DEVICE` | `plughw:CARD=Device,DEV=0` | Sound card; list names with `arecord -L \| grep plughw` |
-| `KEY` | empty | Rdio Scanner API key |
+| `KEY` | empty | Rdio Scanner API key (only with Rdio Scanner turned on) |
 | `FREQ` | `118000000` | Monitored frequency in Hz |
 | `THRESHOLD` | `2%` | Audio level that counts as a transmission |
 | `HANG` | `2.0` | Seconds of silence that end a clip |
@@ -103,16 +118,16 @@ Set the channel to AM, turn off battery save (SAVE) and dual watch (TDR), and se
 | Address | Use it for |
 | --- | --- |
 | `http://adsb.local:8090` | Timeline: browse, search and replay transmissions with transcripts |
-| `http://adsb.local:3000` | Rdio Scanner: live feed and call archive |
+| `http://adsb.local:3000` | Rdio Scanner, if turned on: live feed and call archive |
 | `http://adsb.local:3000/admin` | Rdio Scanner settings |
 
-In the timeline, pick a day at the top, click the activity strip to jump to a time, and click any transmission to play it. With "Play next automatically" ticked, playback continues through the day. Search filters the current day; tick "All days" to search the whole archive. Keys: Space plays or pauses, J next, K previous.
+In the timeline, pick a day at the top, click the activity strip to jump to a time, and click any transmission to play it. With "Play next automatically" ticked, playback continues through the day; at the end of today it waits and plays each new transmission as it arrives, a few seconds after it ends (the recorder's `HANG` of silence plus up to 3 s). Search filters the current day; tick "All days" to search the whole archive. Keys: Space plays or pauses, J next, K previous.
 
 Transcripts often garble callsigns and numbers; use them to find clips, then listen.
 
 ## Managing the containers
 
-Run these in the repository folder. The service names are `recorder`, `timeline` and `rdio-scanner`.
+Run these in the repository folder. The service names are `recorder`, `timeline` and (if turned on) `rdio-scanner`.
 
 | Command | Effect |
 | --- | --- |

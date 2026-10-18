@@ -91,8 +91,27 @@ def clip_status(meta):
     return "pending"
 
 
+# Day listings, reused while the folder is unchanged. Clips and transcripts are
+# always written by renaming a finished file into place, which updates the
+# folder's modification time, so that is enough to notice every change.
+_DAY_CACHE = {}
+
+
 def clips_for_day(day):
     folder = ARCHIVE / day
+    try:
+        mtime = folder.stat().st_mtime_ns
+    except OSError:
+        return []
+    cached = _DAY_CACHE.get(day)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    clips = read_day(folder, day)
+    _DAY_CACHE[day] = (mtime, clips)
+    return clips
+
+
+def read_day(folder, day):
     clips = []
     if not folder.is_dir():
         return clips

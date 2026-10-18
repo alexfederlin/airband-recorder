@@ -34,7 +34,7 @@ upload_enabled() {
 }
 
 upload() {
-  local file="$1" start="$2" resp
+  local file="$1" start="$2" resp rc
   resp=$(curl -s --max-time 30 "$API" \
     -F "audio=@${file};type=audio/wav" \
     -F "audioName=$(basename "$file")" \
@@ -44,7 +44,17 @@ upload() {
     -F "key=${KEY}" \
     -F "system=${SYSTEM}" \
     -F "talkgroup=${TALKGROUP}")
+  rc=$?
   if [[ "$resp" == *"success"* ]]; then
+    rm -f "$file" "$DIR/.rdio-unreachable"
+  elif (( rc == 6 || rc == 7 )); then
+    # Rdio Scanner isn't running (host unknown or connection refused), e.g.
+    # because it's switched off in Docker. The clip is in the archive anyway,
+    # so don't keep it as a failed upload; say so once, not for every clip.
+    if [[ ! -e "$DIR/.rdio-unreachable" ]]; then
+      echo "Rdio Scanner not reachable at $API; clips are only archived until it is" >&2
+      touch "$DIR/.rdio-unreachable"
+    fi
     rm -f "$file"
   else
     echo "Upload failed for $(basename "$file"): $resp" >&2

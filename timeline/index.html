@@ -345,7 +345,8 @@
       entry.count = d.clips.length;
       entry.seconds = d.clips.reduce((a, c) => a + (c.duration || 0), 0);
     }
-    const sig = d.clips.map((c) => c.id + c.status).join('|');
+    // Includes the transcript, so re-transcribed clips show their new text
+    const sig = d.clips.map((c) => c.id + c.status + (c.transcript || '')).join('|');
     const changed = sig !== state.signature;
     state.signature = sig;
 
@@ -706,12 +707,21 @@
       return;
     }
 
-    // Refresh today and pending transcripts every 15 seconds
-    setInterval(async () => {
-      if (state.day !== state.today && state.pending === 0 && state.retranscribe === 0) return;
-      try { await loadDay(state.day, { quiet: true }); notice(''); }
-      catch (e) { notice('Lost the connection to the timeline server. Retrying every 15 seconds.'); }
-    }, 15000);
+    // Refresh today every 3 seconds, so live playback follows closely; other
+    // days only while transcripts are still coming in, every 15 seconds.
+    // Paused while the tab is in the background.
+    const refresh = async () => {
+      const today = state.day === state.today;
+      if (!document.hidden && (today || state.pending > 0 || state.retranscribe > 0)) {
+        try { await loadDay(state.day, { quiet: true }); notice(''); }
+        catch (e) { notice('Lost the connection to the timeline server. Retrying.'); }
+      }
+      setTimeout(refresh, state.day === state.today ? 3000 : 15000);
+    };
+    setTimeout(refresh, 3000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && state.day === state.today) loadDay(state.day, { quiet: true }).catch(() => {});
+    });
 
     // Pick up a new day after midnight, and keep the "now" marker moving
     setInterval(async () => {
@@ -720,7 +730,7 @@
         await loadDays();
         if (state.today !== before && state.day === before && !state.clips.length) switchDay(state.today);
         renderStrip();
-      } catch (e) { /* the 15 s refresh reports connection problems */ }
+      } catch (e) { /* the regular refresh reports connection problems */ }
     }, 60000);
   }
 
