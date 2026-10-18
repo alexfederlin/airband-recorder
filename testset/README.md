@@ -13,6 +13,7 @@ recorder runs on bare metal or in containers. The only thing it reads from the r
 | `docker-compose.yml`, `Dockerfile` | The `transcribe` and `benchmark` services and their image |
 | `transcribe.py` | Picks 20 clips from the archive and serves a page to replay and transcribe them |
 | `benchmark.py` | Runs each configuration over the transcribed clips and scores it |
+| `promptlab.py` | The page's Prompt lab: tries prompts and suggests prompt terms (uses `benchmark.py`) |
 | `configs.json` | The models and settings to compare |
 
 Run all commands below in this folder (`cd testset`).
@@ -123,6 +124,29 @@ Under the controls the page shows roughly the same chain as an ffmpeg `-af` filt
 `acompressor` aren't identical to the browser's algorithms). When you save a clip with filters on, that string is
 stored as `listen_filter` next to your transcript, so you can later tell which filters helped you. The filters
 only change what you hear; the clip files are not modified.
+
+### Prompt lab
+
+The **Prompt lab** tab tries out prompts without editing files. Whisper treats the prompt as the text just
+before the clip: words in it become more likely (local names, callsigns, reporting points), and Whisper copies
+its style (digits or words, spelling). Write it like a short transcript excerpt, most important terms last;
+whisper.cpp keeps only the last ~220 tokens, and the page shows an estimate.
+
+1. Pick a model configuration from `configs.json` (default `atc-small`) and write a prompt. **ATC default**,
+   **German** and **Empty** start from the built-in prompts or none.
+2. **Suggestions** extracts recurring airline callsigns, registrations, names and places, runways, frequencies
+   and phrases, either from your hand transcripts (accurate, few) or from the whole archive (many, but with the
+   live model's mistakes). Click one to add it to the prompt.
+3. **Run** transcribes all transcribed clips with your prompt and compares them with the same configuration's
+   usual prompt: error rates, noise clips with invented text, and per-clip diffs, the clips that changed first.
+   Results are shared with the benchmark's cache, so the usual prompt costs nothing if the benchmark has run it.
+   On the laptop a run takes a few minutes for a Small model; only one runs at a time.
+4. Earlier runs are listed on the left, best first (▼ better, ▲ worse than the usual prompt); click one to load
+   its prompt and result. **Save as benchmark configuration** adds the prompt to `configs.json`.
+
+To use a winning prompt live, put it into the top-level `.env` as `WHISPER_PROMPT="…"` and run
+`docker compose up -d` in the repository folder. With `RETRANSCRIBE=1` the timeline then redoes the archive
+with it in the background.
 
 ## 3. Benchmark
 

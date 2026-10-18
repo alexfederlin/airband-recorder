@@ -26,7 +26,7 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = Path(__file__).resolve().parent
 HOME = Path.home()
@@ -140,6 +140,7 @@ class TestSet:
         return entry
 
     detector = None   # a LanguageDetector when clips are filtered by language
+    lab = None        # the PromptLab (promptlab.py), set up in main()
 
     def accept(self, source, wav):
         return self.detector.accept(source, wav) if self.detector else True
@@ -333,8 +334,30 @@ def make_handler(testset, opts):
             self.do_GET()
 
         def do_GET(self):
-            path = unquote(urlparse(self.path).path)
+            url = urlparse(self.path)
+            path = unquote(url.path)
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            lab = testset.lab
             try:
+                if path.startswith("/api/lab") and lab is None:
+                    return self.send_json({"error": "prompt lab unavailable"}, 503)
+                if path == "/api/lab":
+                    import benchmark
+                    configs = [c["name"] for c in lab.configs()]
+                    default = next((n for n in ("atc-small", "base") if n in configs), configs[0] if configs else "")
+                    return self.send_json({
+                        "configs": configs, "default": default,
+                        "prompts": {"en": benchmark.DEFAULT_PROMPT, "de": benchmark.GERMAN_PROMPT},
+                        "base_prompts": {c["name"]: benchmark.prompt_of(c) for c in lab.configs()},
+                        "history": lab.history(), "status": lab.status,
+                        "clips": len(lab.clips())})
+                if path == "/api/lab/status":
+                    return self.send_json(lab.status)
+                if path == "/api/lab/result":
+                    result = lab.result(query.get("name", ""))
+                    return self.send_json(result) if result else self.not_found()
+                if path == "/api/lab/suggest":
+                    return self.send_json(lab.suggest(query.get("source", "reference")))
                 if path in ("/", "/index.html"):
                     self.send_body(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
                 elif path == "/api/clips":
@@ -366,6 +389,15 @@ def make_handler(testset, opts):
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:
                 return self.send_json({"error": "bad json"}, 400)
+            if path.startswith("/api/lab/") and testset.lab is None:
+                return self.send_json({"error": "prompt lab unavailable"}, 503)
+            if path == "/api/lab/run":
+                outcome = testset.lab.start(str(body.get("base") or ""), str(body.get("prompt") or ""))
+                return self.send_json({"result": outcome}, 200 if outcome == "started" else 409)
+            if path == "/api/lab/save":
+                outcome = testset.lab.save_config(body.get("name") or "", str(body.get("base") or ""),
+                                                  str(body.get("prompt") or ""))
+                return self.send_json({"result": outcome}, 200 if outcome == "saved" else 409)
             if path == "/api/add":
                 entry = testset.add(str(body.get("source") or ""))
                 if entry is None:
@@ -471,6 +503,21 @@ details { margin-top:8px; } summary { cursor:pointer; color:var(--muted); font-s
 .fgrid.off { opacity:.45; }
 code.ff { font-size:12px; word-break:break-all; }
 label.chk { display:inline-flex; gap:6px; align-items:center; }
+select { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:inherit; font:inherit; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 12px; }
+.chip { padding:3px 9px; border:1px solid var(--line); border-radius:12px; background:var(--bg); color:inherit;
+  font:inherit; font-size:13px; cursor:pointer; }
+.chip:hover { border-color:var(--accent); }
+.chip small { color:var(--muted); margin-left:4px; }
+table.cmp { border-collapse:collapse; width:100%; margin-bottom:12px; }
+table.cmp td, table.cmp th { border-bottom:1px solid var(--line); padding:5px 8px; text-align:left; }
+table.cmp td:not(:first-child), table.cmp th:not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
+.diff { font-family:ui-monospace, Consolas, monospace; font-size:14px; margin:4px 0; }
+.diff .s { color:var(--warn); text-decoration:underline wavy; }
+.diff .d { color:#dc2626; text-decoration:line-through; }
+.diff .i { color:var(--accent); font-style:italic; }
+.better { color:var(--ok); } .worse { color:#dc2626; }
+.warn { color:var(--warn); }
 .arow { display:grid; grid-template-columns:auto 76px 52px 1fr auto; gap:10px; align-items:center;
   padding:6px 8px; border-bottom:1px solid var(--line); cursor:pointer; }
 .arow.sel { background:var(--panel); box-shadow:inset 3px 0 var(--accent); }
@@ -481,7 +528,7 @@ label.chk { display:inline-flex; gap:6px; align-items:center; }
 </style></head>
 <body>
 <header><h1>Whisper test set</h1>
-  <button class="b tab on" id="tab-t">Transcribe</button><button class="b tab" id="tab-a">Browse archive</button>
+  <button class="b tab on" id="tab-t">Transcribe</button><button class="b tab" id="tab-a">Browse archive</button><button class="b tab" id="tab-l">Prompt lab</button>
   <span class="progress" id="progress"></span><a id="report" href="/report" target="_blank" hidden>Benchmark report</a></header>
 <main>
 <nav id="list"></nav>
@@ -497,6 +544,7 @@ async function load() {
   clips = r.clips; $("#report").hidden = !r.report;
   $("#tab-t").onclick = showTranscribe;
   $("#tab-a").onclick = showArchive;
+  $("#tab-l").onclick = showLab;
   showTranscribe();
 }
 
@@ -504,6 +552,7 @@ function setMode(m) {
   mode = m;
   $("#tab-t").classList.toggle("on", m === "t");
   $("#tab-a").classList.toggle("on", m === "a");
+  $("#tab-l").classList.toggle("on", m === "l");
 }
 
 async function showTranscribe() {
@@ -674,9 +723,14 @@ async function removeClip() {
 
 const A = { days: [], day: null, rows: [], sel: -1, audio: null };
 
+async function leaveTranscribe() {
+  if (mode === "t" && dirty && cur) await save(false);
+  const a = $("#audio"); if (a) a.pause();
+  if (A.audio) A.audio.pause();
+}
+
 async function showArchive() {
-  if (dirty && cur) await save(false);
-  if (cur) { const a = $("#audio"); if (a) a.pause(); }
+  await leaveTranscribe();
   setMode("a");
   A.days = (await fetch("/api/archive").then(r => r.json())).days;
   $("#list").innerHTML = A.days.map(d => `<button data-d="${d.date}"><span>${d.date}</span><span class="meta">${d.count}</span></button>`).join("")
@@ -761,6 +815,180 @@ document.addEventListener("keydown", e => {
   else if (e.key === " ") { e.preventDefault(); if (A.sel < 0) selectRow(0, true); else A.audio.paused ? A.audio.play() : A.audio.pause(); }
   else if (e.key.toLowerCase() === "a" && A.sel >= 0) { e.preventDefault(); addRow(A.sel); }
 });
+
+// --- Prompt lab -----------------------------------------------------------------
+// Runs a configuration with another prompt over the transcribed clips and
+// compares it with the same configuration's usual prompt (promptlab.py).
+
+const L = { data: null, poll: null, result: null };
+const pct = v => v == null ? "-" : (v * 100).toFixed(1) + " %";
+
+async function showLab() {
+  await leaveTranscribe();
+  setMode("l");
+  L.data = await fetch("/api/lab").then(r => r.json());
+  if (L.data.error) { $("#detail").innerHTML = `<p>${escapeHtml(L.data.error)}</p>`; $("#list").innerHTML = ""; return; }
+  renderLabHistory();
+  const d = L.data;
+  $("#detail").innerHTML = `
+  <div class="card">
+    <div class="row"><strong>Prompt lab</strong><span class="muted">${d.clips} transcribed clips</span></div>
+    <label for="l-base">Model configuration (from configs.json)</label>
+    <select id="l-base">${d.configs.map(n => `<option${n === d.default ? " selected" : ""}>${escapeHtml(n)}</option>`).join("")}</select>
+    <details><summary>Its usual prompt</summary><div class="prod" id="l-baseprompt"></div></details>
+    <label for="l-prompt">Your prompt <span id="l-tokens"></span></label>
+    <textarea id="l-prompt" rows="5" placeholder="Empty = no prompt"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="b primary" id="l-run">Run on all transcribed clips</button>
+      <span class="muted">Start from:</span>
+      <button class="b" data-p="en">ATC default</button><button class="b" data-p="de">German</button><button class="b" data-p="">Empty</button>
+    </div>
+    <div class="status" id="l-status"></div>
+    <p class="muted">Whisper treats the prompt as the text just before the clip: it makes the words in it more likely and copies
+      its style (digits or words, spelling). Write it like a short transcript, most important terms last; only the
+      last ~220 tokens are used. Each run transcribes every clip twice at most (the usual prompt is cached), so it
+      takes a while on the laptop.</p>
+  </div>
+  <div class="card">
+    <div class="row"><strong>Suggestions</strong>
+      <button class="b" id="l-s-ref">From your transcripts</button>
+      <button class="b" id="l-s-arch">From the whole archive</button></div>
+    <div id="l-sugg" class="muted" style="margin-top:8px">Recurring callsigns, names and phrases; click one to add it to the prompt.</div>
+  </div>
+  <div id="l-result"></div>`;
+  const base = $("#l-base"), prompt = $("#l-prompt");
+  const showBase = () => { $("#l-baseprompt").textContent = d.base_prompts[base.value] || "(no prompt)"; };
+  base.onchange = showBase; showBase();
+  prompt.value = d.prompts.en;
+  prompt.oninput = countTokens; countTokens();
+  document.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { prompt.value = b.dataset.p ? d.prompts[b.dataset.p] : ""; countTokens(); });
+  $("#l-run").onclick = runLab;
+  $("#l-s-ref").onclick = () => loadSuggestions("reference");
+  $("#l-s-arch").onclick = () => loadSuggestions("archive");
+  if (d.status.state === "running") pollLab();
+  else if (d.history.length) openLabResult(bestRun().name, false);
+}
+
+function bestRun() { return [...L.data.history].sort((a, b) => a.wer - b.wer)[0]; }
+
+function renderLabHistory() {
+  const runs = [...L.data.history].sort((a, b) => a.wer - b.wer);
+  $("#list").innerHTML = runs.length ? runs.map(h => `<button data-n="${escapeHtml(h.name)}" title="${escapeHtml(h.prompt)}">
+      <span>${pct(h.wer)}</span><span class="${h.wer < h.base_wer ? "better" : h.wer > h.base_wer ? "worse" : ""}">${h.wer < h.base_wer ? "▼" : h.wer > h.base_wer ? "▲" : "="}</span>
+      <span class="meta">${escapeHtml(h.base)} · ${escapeHtml((h.prompt || "(none)").slice(0, 18))}…</span></button>`).join("")
+    : `<p class="muted" style="padding:14px">No runs yet. Results appear here, best first.</p>`;
+  $("#list").querySelectorAll("button").forEach(b => b.onclick = () => openLabResult(b.dataset.n, true));
+}
+
+function countTokens() {
+  const n = Math.round(($("#l-prompt").value.match(/[\wÄÖÜäöüß]+|[^\s\w]/g) || []).length * 1.25);
+  $("#l-tokens").innerHTML = `<span class="${n > 200 ? "warn" : "muted"}">≈ ${n} of ~220 tokens${n > 200 ? ": the start will be cut" : ""}</span>`;
+}
+
+async function loadSuggestions(source) {
+  $("#l-sugg").textContent = source === "archive" ? "Reading the archive…" : "Reading your transcripts…";
+  const s = await fetch(`/api/lab/suggest?source=${source}`).then(r => r.json());
+  const groups = [["callsigns", "Airline callsigns"], ["registrations", "Registrations"], ["names", "Names and places"],
+                  ["runways", "Runways"], ["frequencies", "Frequencies"], ["phrases", "Frequent phrases"]];
+  const html = groups.filter(([k]) => s[k] && s[k].length).map(([k, title]) => `<div class="muted">${title}</div><div class="chips">` +
+    s[k].map(x => `<button class="chip" data-t="${escapeHtml(x.example || x.text)}">${escapeHtml(x.text)}<small>${x.count}</small></button>`).join("") + "</div>").join("");
+  $("#l-sugg").innerHTML = `<div class="muted" style="margin-bottom:6px">${s.texts} transcripts read${source === "archive" ? " (live transcripts: expect some of Whisper's own mistakes)" : ""}.</div>` +
+    (html || "Nothing recurs often enough yet.");
+  $("#l-sugg").querySelectorAll(".chip").forEach(c => c.onclick = () => {
+    const p = $("#l-prompt"), v = p.value.trim();
+    p.value = v ? v.replace(/[.,]?$/, ", ") + c.dataset.t : c.dataset.t;
+    countTokens();
+  });
+}
+
+async function runLab() {
+  const r = await fetch("/api/lab/run", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base: $("#l-base").value, prompt: $("#l-prompt").value }) });
+  const res = await r.json();
+  if (!r.ok) { $("#l-status").textContent = res.result === "busy" ? "A run is already going." : (res.result || res.error); return; }
+  pollLab();
+}
+
+function pollLab() {
+  clearTimeout(L.poll);
+  const tick = async () => {
+    const s = await fetch("/api/lab/status").then(r => r.json()).catch(() => null);
+    if (!s || mode !== "l") { if (s && s.state === "running") L.poll = setTimeout(tick, 2000); return; }
+    const btn = $("#l-run");
+    if (s.state === "running") {
+      btn.disabled = true;
+      $("#l-status").textContent = `Running (${s.phase}${s.total ? `: ${s.done} of ${s.total} clips` : ", using cached results where possible"})…`;
+      L.poll = setTimeout(tick, 2000);
+    } else {
+      btn.disabled = false;
+      if (s.state === "error") $("#l-status").textContent = "Failed: " + s.error;
+      if (s.state === "done") {
+        $("#l-status").textContent = "Done.";
+        L.data = await fetch("/api/lab").then(r => r.json());
+        renderLabHistory();
+        openLabResult(s.name, false);
+      }
+    }
+  };
+  tick();
+}
+
+async function openLabResult(name, fill) {
+  const r = await fetch(`/api/lab/result?name=${encodeURIComponent(name)}`);
+  if (!r.ok) { $("#l-result").innerHTML = ""; return; }
+  const res = L.result = await r.json();
+  $("#list").querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.n === name));
+  if (fill) { $("#l-base").value = res.base_name; $("#l-base").onchange(); $("#l-prompt").value = res.prompt; countTokens(); }
+  renderLabResult();
+}
+
+function renderLabResult() {
+  const res = L.result, b = res.base, l = res.lab;
+  const row = (label, fb, fl, lowerBetter = true, num = null) => {
+    const cls = num ? (num[1] < num[0] === lowerBetter ? "better" : num[1] > num[0] === lowerBetter ? "worse" : "") : "";
+    return `<tr><td>${label}</td><td>${fb}</td><td class="${num && num[0] !== num[1] ? cls : ""}">${fl}</td></tr>`;
+  };
+  const showAll = L.showAll || false;
+  const clips = res.per_clip.filter(c => showAll || c.base_errors !== c.lab_errors)
+    .sort((x, y) => (y.base_errors - y.lab_errors) - (x.base_errors - x.lab_errors));
+  $("#l-result").innerHTML = `
+  <div class="card">
+    <div class="row"><strong>Result</strong><span class="muted">${escapeHtml(res.base_name)}, ${res.lab.clips} clips${res.missing ? ` (${res.missing} newer clips not run yet: run again to include them)` : ""}</span></div>
+    <p class="diff" style="white-space:pre-wrap">${escapeHtml(res.prompt || "(no prompt)")}</p>
+    <table class="cmp"><tr><th></th><th>Usual prompt</th><th>Your prompt</th></tr>
+      ${row("Word error rate", pct(b.wer), pct(l.wer), true, [b.wer, l.wer])}
+      ${row("Character error rate", pct(b.cer), pct(l.cer), true, [b.cer, l.cer])}
+      ${row("Wrong / missing / extra words", `${b.sub} / ${b.del} / ${b.ins}`, `${l.sub} / ${l.del} / ${l.ins}`)}
+      ${row("Clips without errors", b.exact, l.exact, false, [b.exact, l.exact])}
+      ${row("Noise clips with text", b.noise, l.noise)}
+      ${row("Time / audio length", b.rtf == null ? "-" : b.rtf.toFixed(2), l.rtf == null ? "-" : l.rtf.toFixed(2))}
+    </table>
+    <div class="row">
+      <input type="text" id="l-name" placeholder="Name, e.g. atc-small local-prompt" style="flex:1;min-width:180px">
+      <button class="b" id="l-save">Save as benchmark configuration</button>
+      <span class="status" id="l-saved"></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="chk muted" style="margin:0"><input type="checkbox" id="l-all"${showAll ? " checked" : ""}> Show unchanged clips too</label>
+      <span class="muted">${res.per_clip.filter(c => c.lab_errors < c.base_errors).length} clips better,
+        ${res.per_clip.filter(c => c.lab_errors > c.base_errors).length} worse</span>
+    </div>
+  </div>
+  ${clips.map(c => `<div class="card">
+    <div class="row"><strong>#${c.id}</strong><span class="muted">${escapeHtml(c.lang)} · ${c.words} words</span>
+      <span class="${c.lab_errors < c.base_errors ? "better" : c.lab_errors > c.base_errors ? "worse" : "muted"}">errors ${c.base_errors} → ${c.lab_errors}</span></div>
+    <div class="diff"><span class="muted">You:</span> ${escapeHtml(c.reference) || "<em>(no speech)</em>"}</div>
+    <div class="diff"><span class="muted">Usual:</span> ${c.base_html}</div>
+    <div class="diff"><span class="muted">Yours:</span> ${c.lab_html}</div>
+  </div>`).join("")}`;
+  $("#l-all").onchange = () => { L.showAll = $("#l-all").checked; renderLabResult(); };
+  $("#l-save").onclick = async () => {
+    const r = await fetch("/api/lab/save", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: $("#l-name").value, base: res.base_name, prompt: res.prompt }) });
+    const out = await r.json();
+    $("#l-saved").textContent = out.result === "saved" ? "Saved to configs.json." : out.result;
+  };
+}
 
 // --- Listening filters --------------------------------------------------------
 // High-pass, low-pass, compressor and volume run live in Web Audio on the
@@ -1011,6 +1239,12 @@ def main():
         log(f"Only {len(testset.clips)} suitable clips found in {opts.archive}")
     done = sum(c["reference"] is not None for c in testset.clips)
     log(f"Test set: {testset.path} ({done}/{len(testset.clips)} transcribed)")
+
+    try:
+        from promptlab import PromptLab   # next to this file; reuses benchmark.py
+        testset.lab = PromptLab(testset, HERE / "configs.json")
+    except ImportError as exc:
+        log(f"Prompt lab unavailable: {exc}")
 
     server = ThreadingHTTPServer(("0.0.0.0", opts.port), make_handler(testset, opts))
     server.daemon_threads = True

@@ -98,7 +98,8 @@ Set these in `.env`, then run `docker compose up -d`. An empty `KEY` skips the R
 | `WHISPER_LANG` | `en` | Transcription language; `auto` if German traffic is common |
 | `WHISPER_MODEL_NAME` | `base` | Speech model built into the image; `tiny` is faster, `small` more accurate. Needs `docker compose up -d --build` after a change |
 | `WHISPER_MODEL` | built-in model | A model file in `./models` instead, as `/extra-models/<file>`, e.g. `/extra-models/ggml-jlvdoorn--whisper-small-atco2-asr.bin` (the ATC fine-tune that won the test set). Needs `docker compose up -d` after a change |
-| `RETRANSCRIBE` | `1` | Redo transcripts made with another model or language, in the background after new clips; `0` keeps them |
+| `WHISPER_PROMPT` | built-in ATC prompt | Text that steers Whisper towards local names, callsigns and phrasing; `none` turns it off. Try variants in the test set's Prompt lab first. Put it in double quotes |
+| `RETRANSCRIBE` | `1` | Redo transcripts made with another model, language or prompt, in the background after new clips; `0` keeps them |
 | `WHISPER_THREADS` | `4` | CPU threads for transcription |
 | `KEEP_DAYS` | `30` | Days of recordings to keep; `0` keeps everything |
 

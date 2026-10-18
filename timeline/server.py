@@ -7,6 +7,7 @@ recordings in the background with whisper.cpp. Uses only the Python standard
 library. Settings can be changed with environment variables (see below).
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -27,19 +28,23 @@ WHISPER_BIN = os.environ.get("WHISPER_BIN", str(HOME / "whisper.cpp/build/bin/wh
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", str(HOME / "whisper.cpp/models/ggml-base.bin"))
 WHISPER_LANG = os.environ.get("WHISPER_LANG", "en")      # "en", "de" or "auto"
 WHISPER_THREADS = os.environ.get("WHISPER_THREADS", "4")
-WHISPER_PROMPT = os.environ.get(
-    "WHISPER_PROMPT",
-    "Air traffic control radio. Runway, taxi, holding point, cleared, QNH, "
-    "squawk, wind, contact tower, report, final, downwind.",
-)
+DEFAULT_PROMPT = ("Air traffic control radio. Runway, taxi, holding point, cleared, QNH, "
+                  "squawk, wind, contact tower, report, final, downwind.")
+# Empty or unset = the default above, "none" = no prompt, anything else = that prompt
+_prompt = os.environ.get("WHISPER_PROMPT", "").strip()
+WHISPER_PROMPT = DEFAULT_PROMPT if not _prompt else ("" if _prompt.lower() == "none" else _prompt)
 KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "30"))         # 0 = keep forever
 # 1 = transcripts made with another model or language are redone in the
 # background, after new clips (e.g. the whole archive after a model change)
 RETRANSCRIBE = os.environ.get("RETRANSCRIBE", "1") == "1"
 # ------------------------------------------------------------------------------
 
-# Stored with each transcript, so a model change can be detected later
+# Stored with each transcript, so a model, language or prompt change can be
+# detected later. The default prompt adds nothing, so tags from before prompts
+# were configurable stay valid.
 MODEL_TAG = f"{Path(WHISPER_MODEL).name}|{WHISPER_LANG}"
+if WHISPER_PROMPT != DEFAULT_PROMPT:
+    MODEL_TAG += "|prompt " + hashlib.sha1(WHISPER_PROMPT.encode()).hexdigest()[:8]
 
 PAGE = Path(__file__).resolve().parent / "index.html"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

@@ -61,6 +61,8 @@ services:
       # The model built into the image, unless .env names a file in ./models
       # (mounted at /extra-models), e.g. an ATC fine-tune from the test set
       WHISPER_MODEL: ${WHISPER_MODEL:-/models/ggml-${WHISPER_MODEL_NAME:-base}.bin}
+      # Empty = the built-in ATC prompt, "none" = no prompt
+      WHISPER_PROMPT: ${WHISPER_PROMPT:-}
       RETRANSCRIBE: ${RETRANSCRIBE:-1}
       KEEP_DAYS: ${KEEP_DAYS:-30}
     volumes:

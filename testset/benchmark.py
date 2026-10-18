@@ -323,8 +323,10 @@ def config_key(cfg):
     return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[:10]
 
 
-def run_config(cfg, clips, data, opts):
-    """Returns {clip_id: {"text", "seconds"}} for one configuration, using the cache."""
+def run_config(cfg, clips, data, opts, progress=None):
+    """Returns {clip_id: {"text", "seconds"}} for one configuration, using the cache.
+    progress(done, total), if given, is called after each newly transcribed clip
+    (used by the prompt lab in transcribe.py)."""
     cache_path = data / "results" / "runs" / f"{safe_name(cfg['name'])}.json"
     try:
         cache = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -350,10 +352,14 @@ def run_config(cfg, clips, data, opts):
             text = raw if cfg.get("raw") else clean_text(raw, prompt_of(cfg))
             cache["clips"][clip["id"]] = {"source": clip["source"], "text": text,
                                           "raw": raw, "seconds": round(seconds, 2)}
-            print(f"\r  {n}/{len(todo)} clips", end="", flush=True)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
-        print()
+            if progress:
+                progress(n, len(todo))
+            else:
+                print(f"\r  {n}/{len(todo)} clips", end="", flush=True)
+        if not progress:
+            print()
     return cache["clips"]
 
 
