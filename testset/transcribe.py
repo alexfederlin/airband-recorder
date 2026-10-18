@@ -175,6 +175,73 @@ class TestSet:
         self.save()
         return new
 
+    def remove(self, clip_id):
+        """Drops a clip and its transcript; random selection won't pick it again."""
+        old = self.get(clip_id)
+        if old is None:
+            return False
+        self.clips.remove(old)
+        self.doc.setdefault("rejected", []).append(old["source"])
+        try:
+            (self.data / old["audio"]).unlink()
+        except OSError:
+            pass
+        self.save()
+        return True
+
+    # --- Browsing the archive by hand ---
+
+    def archive_wav(self, source):
+        """Archive path for "YYYY-MM-DD/name.wav", or None if invalid or missing."""
+        parts = source.split("/")
+        if len(parts) != 2 or not DATE_RE.match(parts[0]) or not CLIP_RE.match(parts[1]):
+            return None
+        wav = self.archive / parts[0] / parts[1]
+        return wav if wav.is_file() else None
+
+    def archive_days(self):
+        if not self.archive.is_dir():
+            return []
+        days = [d for d in self.archive.iterdir() if d.is_dir() and DATE_RE.match(d.name)]
+        return [{"date": d.name, "count": sum(1 for _ in d.glob("*.wav"))}
+                for d in sorted(days, key=lambda d: d.name, reverse=True)]
+
+    def archive_day(self, date):
+        folder = self.archive / date
+        if not DATE_RE.match(date) or not folder.is_dir():
+            return []
+        in_set = {c["source"]: c["id"] for c in self.clips}
+        clips = []
+        for wav in folder.glob("*.wav"):
+            try:
+                meta = json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                meta = {}
+            source = f"{date}/{wav.name}"
+            clips.append({"source": source, "start": meta.get("start"), "duration": meta.get("duration"),
+                          "transcript": meta.get("transcript"), "in_set": in_set.get(source)})
+        clips.sort(key=lambda c: (c["start"] or 0, c["source"]))
+        return clips
+
+    def add(self, source):
+        """Adds an archive clip chosen by hand. Returns the new entry, the
+        existing one if it's already in the set, or None if it doesn't exist."""
+        existing = next((c for c in self.clips if c["source"] == source), None)
+        if existing:
+            return existing
+        wav = self.archive_wav(source)
+        if wav is None:
+            return None
+        try:
+            meta = json.loads(wav.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        next_num = max([int(c["id"]) for c in self.clips] + [0]) + 1
+        entry = self.make_entry(f"{next_num:02d}", source, wav, meta)
+        self.clips.append(entry)
+        self.save()
+        return entry
+
 
 # --- Language filter ------------------------------------------------------------
 
@@ -279,7 +346,14 @@ def make_handler(testset, opts):
                         return self.not_found()
                     self.send_body(200, report.read_bytes(), "text/html; charset=utf-8")
                 elif path.startswith("/clips/"):
-                    self.serve_audio(path[len("/clips/"):])
+                    name = path[len("/clips/"):]
+                    self.serve_audio(testset.clips_dir / name if CLIP_RE.match(name) else None)
+                elif path == "/api/archive":
+                    self.send_json({"days": testset.archive_days()})
+                elif path.startswith("/api/archive/"):
+                    self.send_json({"clips": testset.archive_day(path[len("/api/archive/"):])})
+                elif path.startswith("/archive/"):
+                    self.serve_audio(testset.archive_wav(path[len("/archive/"):]))
                 else:
                     self.not_found()
             except (BrokenPipeError, ConnectionResetError):
@@ -292,12 +366,22 @@ def make_handler(testset, opts):
                 body = json.loads(self.rfile.read(length) or b"{}")
             except ValueError:
                 return self.send_json({"error": "bad json"}, 400)
-            m = re.match(r"^/api/clip/(\d+)(/replace)?$", path)
+            if path == "/api/add":
+                entry = testset.add(str(body.get("source") or ""))
+                if entry is None:
+                    return self.not_found()
+                log(f"Added clip {entry['id']}: {entry['source']}")
+                return self.send_json(entry)
+            m = re.match(r"^/api/clip/(\d+)(/replace|/remove)?$", path)
             if not m:
                 return self.not_found()
             clip = testset.get(m.group(1))
             if clip is None:
                 return self.not_found()
+            if m.group(2) == "/remove":
+                testset.remove(clip["id"])
+                log(f"Removed clip {clip['id']}: {clip['source']}")
+                return self.send_json({"removed": clip["id"]})
             if m.group(2):
                 new = testset.replace(clip["id"], opts.min_duration, opts.max_duration)
                 if new is None:
@@ -315,11 +399,8 @@ def make_handler(testset, opts):
             testset.save()
             self.send_json(clip)
 
-        def serve_audio(self, name):
-            if not CLIP_RE.match(name):
-                return self.not_found()
-            file = testset.clips_dir / name
-            if not file.is_file():
+        def serve_audio(self, file):
+            if file is None or not file.is_file():
                 return self.not_found()
             size = file.stat().st_size
             start, end, status = 0, size - 1, 200
@@ -389,29 +470,55 @@ details { margin-top:8px; } summary { cursor:pointer; color:var(--muted); font-s
 .fgrid .chk { display:flex; gap:6px; align-items:center; color:var(--text); font-size:14px; }
 .fgrid.off { opacity:.45; }
 code.ff { font-size:12px; word-break:break-all; }
+label.chk { display:inline-flex; gap:6px; align-items:center; }
+.arow { display:grid; grid-template-columns:auto 76px 52px 1fr auto; gap:10px; align-items:center;
+  padding:6px 8px; border-bottom:1px solid var(--line); cursor:pointer; }
+.arow.sel { background:var(--panel); box-shadow:inset 3px 0 var(--accent); }
+.arow .tx { color:var(--muted); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.arow .num, .arow .tm { font-size:13px; font-variant-numeric:tabular-nums; }
+.arow .inset { font-size:13px; color:var(--ok); }
+@media (max-width:760px) { .arow { grid-template-columns:auto 64px 1fr auto; } .arow .num { display:none; } }
 </style></head>
 <body>
-<header><h1>Whisper test set</h1><span class="progress" id="progress"></span><a id="report" href="/report" target="_blank" hidden>Benchmark report</a></header>
+<header><h1>Whisper test set</h1>
+  <button class="b tab on" id="tab-t">Transcribe</button><button class="b tab" id="tab-a">Browse archive</button>
+  <span class="progress" id="progress"></span><a id="report" href="/report" target="_blank" hidden>Benchmark report</a></header>
 <main>
 <nav id="list"></nav>
 <section id="detail"><p class="muted">Loading…</p></section>
 </main>
 <script>
-let clips = [], cur = null, dirty = false;
+let clips = [], cur = null, dirty = false, mode = "t";
 const $ = s => document.querySelector(s);
 const fmtTime = t => t ? new Date(t * 1000).toLocaleString() : "";
 
 async function load() {
   const r = await fetch("/api/clips").then(r => r.json());
   clips = r.clips; $("#report").hidden = !r.report;
+  $("#tab-t").onclick = showTranscribe;
+  $("#tab-a").onclick = showArchive;
+  showTranscribe();
+}
+
+function setMode(m) {
+  mode = m;
+  $("#tab-t").classList.toggle("on", m === "t");
+  $("#tab-a").classList.toggle("on", m === "a");
+}
+
+async function showTranscribe() {
+  if (A.audio) A.audio.pause();
+  setMode("t");
   renderList();
-  const first = clips.find(c => c.reference === null) || clips[0];
-  if (first) select(first.id); else $("#detail").innerHTML = "<p>No clips in the test set. Is the archive path right?</p>";
+  const target = (cur && clips.find(c => c.id === cur.id)) || clips.find(c => c.reference === null) || clips[0];
+  if (target) select(target.id);
+  else $("#detail").innerHTML = "<p>No clips in the test set yet. Add some with <b>Browse archive</b>.</p>";
 }
 
 function renderList() {
   const done = clips.filter(c => c.reference !== null).length;
   $("#progress").textContent = `${done} of ${clips.length} transcribed`;
+  if (mode !== "t") return;
   $("#list").innerHTML = clips.map(c => `<button data-id="${c.id}" class="${cur && cur.id === c.id ? "active" : ""}">
     <span class="mark ${c.reference === "" ? "empty" : ""}">${c.reference === null ? "" : c.reference === "" ? "∅" : "✓"}</span>
     <span>#${c.id}</span><span class="meta">${c.lang ? c.lang.toUpperCase() + " · " : ""}${(c.duration || 0).toFixed(1)} s</span></button>`).join("");
@@ -466,6 +573,7 @@ async function select(id) {
       <button class="b" id="save">Save</button>
       <button class="b" id="silent" title="Saves an empty transcript: Whisper should output nothing here">Only noise / no speech</button>
       <button class="b" id="replace" title="Swap this clip for another random one">Replace clip</button>
+      <button class="b" id="remove" title="Take this clip out of the test set">Remove clip</button>
       <button class="b" id="clear" title="Mark as not transcribed yet">Clear</button>
     </div>
     <div class="status" id="status"></div>
@@ -500,6 +608,7 @@ async function select(id) {
   $("#silent").onclick = () => { ref.value = ""; save(true, ""); };
   $("#clear").onclick = () => save(false, null);
   $("#replace").onclick = replace;
+  $("#remove").onclick = removeClip;
   ref.onkeydown = e => {
     if (e.ctrlKey && e.code === "Space") { e.preventDefault(); a.paused ? a.play() : a.pause(); }
     else if (e.key === "Escape") { e.preventDefault(); a.currentTime = 0; a.play(); }
@@ -546,6 +655,112 @@ async function replace() {
   clips[clips.findIndex(c => c.id === cur.id)] = fresh; dirty = false;
   select(fresh.id);
 }
+
+async function removeClip() {
+  const msg = cur.reference !== null ? "Remove this clip and its transcript from the test set?" : "Remove this clip from the test set?";
+  if (!confirm(msg)) return;
+  const r = await fetch(`/api/clip/${cur.id}/remove`, { method: "POST", body: "{}" });
+  if (!r.ok) { $("#status").textContent = "Remove failed: " + r.status; return; }
+  const i = clips.findIndex(c => c.id === cur.id);
+  clips.splice(i, 1); dirty = false; cur = null;
+  const next = clips[Math.min(i, clips.length - 1)];
+  renderList();
+  if (next) select(next.id); else showTranscribe();
+}
+
+// --- Archive browser ------------------------------------------------------------
+// Lists every archived clip by day, to pick clips by hand (for example German
+// ones). Up/Down move and play, Space plays or pauses, A adds the selected clip.
+
+const A = { days: [], day: null, rows: [], sel: -1, audio: null };
+
+async function showArchive() {
+  if (dirty && cur) await save(false);
+  if (cur) { const a = $("#audio"); if (a) a.pause(); }
+  setMode("a");
+  A.days = (await fetch("/api/archive").then(r => r.json())).days;
+  $("#list").innerHTML = A.days.map(d => `<button data-d="${d.date}"><span>${d.date}</span><span class="meta">${d.count}</span></button>`).join("")
+    || `<p class="muted" style="padding:14px">Archive is empty or not mounted.</p>`;
+  $("#list").querySelectorAll("button").forEach(b => b.onclick = () => openDay(b.dataset.d));
+  $("#detail").innerHTML = `
+  <div class="card">
+    <div class="row"><strong id="a-day">Pick a day</strong><span class="muted" id="a-count"></span></div>
+    <audio id="preview" controls preload="none"></audio>
+    <input type="text" id="a-filter" placeholder="Filter by the live transcript, e.g. rollen, piste, wiederholen">
+    <div class="row" style="margin-top:8px">
+      <label class="chk muted" style="margin:0"><input type="checkbox" id="a-next"> Play next automatically</label>
+      <label class="chk muted" style="margin:0"><input type="checkbox" id="a-short" checked> Hide clips under 1.5 s</label>
+    </div>
+  </div>
+  <p class="muted">Click a row to play it. Keys: <kbd>↑</kbd>/<kbd>↓</kbd> previous/next and play, <kbd>Space</kbd> play/pause,
+    <kbd>A</kbd> add to the test set. Added clips appear at the end of the Transcribe list.</p>
+  <div id="a-rows"></div>`;
+  A.audio = $("#preview");
+  A.audio.onended = () => { if ($("#a-next").checked && A.sel < A.rows.length - 1) selectRow(A.sel + 1, true); };
+  $("#a-filter").oninput = $("#a-short").onchange = renderRows;
+  try { $("#a-next").checked = localStorage.getItem("a-next") === "1"; } catch (e) {}
+  $("#a-next").onchange = () => { try { localStorage.setItem("a-next", $("#a-next").checked ? "1" : "0"); } catch (e) {} };
+  const day = A.day && A.days.some(d => d.date === A.day) ? A.day : A.days[0] && A.days[0].date;
+  if (day) openDay(day);
+}
+
+async function openDay(date) {
+  A.day = date; A.sel = -1;
+  $("#list").querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.d === date));
+  $("#a-day").textContent = date;
+  A.all = (await fetch(`/api/archive/${date}`).then(r => r.json())).clips;
+  renderRows();
+}
+
+function renderRows() {
+  const q = $("#a-filter").value.trim().toLowerCase(), hideShort = $("#a-short").checked;
+  A.rows = (A.all || []).filter(c => (!hideShort || (c.duration || 0) >= 1.5) &&
+                                     (!q || (c.transcript || "").toLowerCase().includes(q)));
+  $("#a-count").textContent = `${A.rows.length} of ${(A.all || []).length} clips`;
+  $("#a-rows").innerHTML = A.rows.map((c, i) => `<div class="arow${i === A.sel ? " sel" : ""}" data-i="${i}">
+    <button class="b play" title="Play">▶</button>
+    <span class="tm">${c.start ? new Date(c.start * 1000).toLocaleTimeString() : c.source.split("/")[1]}</span>
+    <span class="num">${(c.duration || 0).toFixed(1)} s</span>
+    <span class="tx" title="${escapeHtml(c.transcript || "")}">${c.transcript ? escapeHtml(c.transcript) : "<em>no transcript</em>"}</span>
+    ${c.in_set ? `<span class="inset">#${c.in_set} in set</span>` : `<button class="b add">Add</button>`}
+  </div>`).join("");
+  $("#a-rows").querySelectorAll(".arow").forEach(row => {
+    const i = +row.dataset.i;
+    row.onclick = e => { if (!e.target.classList.contains("add")) selectRow(i, true); };
+    const add = row.querySelector(".add");
+    if (add) add.onclick = () => addRow(i);
+  });
+}
+
+function selectRow(i, play) {
+  if (i < 0 || i >= A.rows.length) return;
+  A.sel = i;
+  document.querySelectorAll(".arow").forEach(r => r.classList.toggle("sel", +r.dataset.i === i));
+  const row = document.querySelector(`.arow[data-i="${i}"]`);
+  if (row) row.scrollIntoView({ block: "nearest" });
+  A.audio.src = "/archive/" + A.rows[i].source;
+  if (play) A.audio.play().catch(() => {});
+}
+
+async function addRow(i) {
+  const c = A.rows[i];
+  if (!c || c.in_set) return;
+  const r = await fetch("/api/add", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ source: c.source }) });
+  if (!r.ok) { alert("Adding failed: " + r.status); return; }
+  const entry = await r.json();
+  if (!clips.some(x => x.id === entry.id)) clips.push(entry);
+  c.in_set = entry.id;
+  renderList(); renderRows();
+}
+
+document.addEventListener("keydown", e => {
+  if (mode !== "a" || e.target.tagName === "INPUT" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); selectRow(A.sel + 1, true); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); selectRow(A.sel - 1, true); }
+  else if (e.key === " ") { e.preventDefault(); if (A.sel < 0) selectRow(0, true); else A.audio.paused ? A.audio.play() : A.audio.pause(); }
+  else if (e.key.toLowerCase() === "a" && A.sel >= 0) { e.preventDefault(); addRow(A.sel); }
+});
 
 // --- Listening filters --------------------------------------------------------
 // High-pass, low-pass, compressor and volume run live in Web Audio on the

@@ -74,8 +74,16 @@ and copies them into `data/`. Later starts keep the same set and don't need the 
 
 ### Adding clips
 
-Existing clips and transcripts are always kept; new clips are numbered after them. Stop the running page
-first (`docker compose down`), then start it with options:
+Existing clips and transcripts are always kept; new clips are numbered after them.
+
+**By hand (recommended for German clips):** **Browse archive** at the top of the page lists every archived
+clip by day, with the live transcript. Click a row to play it, or use ↑/↓ to step through and play clips,
+Space to pause and A to add the selected clip. "Play next automatically" plays the day back to back. The
+filter box searches the live transcripts, but with `WHISPER_LANG=en` German speech often comes out as an
+English translation or nonsense, so listening is more reliable than searching. **Remove clip** on the
+Transcribe tab takes a clip (and its transcript) out of the set again.
+
+**At random:** stop the running page first (`docker compose down`), then start it with options:
 
 ```bash
 docker compose run --rm --service-ports transcribe --add 15 --lang de
@@ -91,8 +99,8 @@ docker compose run --rm --service-ports transcribe --add 15 --lang de
 | `--seed 1` | Makes the random selection repeatable |
 
 Whisper's guess is shown next to the language buttons as a hint; tag the clip yourself once you've heard it.
-Language detection on short, noisy radio clips makes mistakes, so expect the odd English clip among them.
-To start a fresh set, delete `data/`.
+On this frequency the detection turned out unreliable (in a first try, 15 clips detected as German were all
+English), so prefer picking German clips by hand. To start a fresh set, delete `data/`.
 
 ### Listening filters
 
@@ -211,7 +219,7 @@ from the fine-tuning. The German entries compare the options:
 columns and the "Best per language" line matter: if a German configuration wins on German clips and
 `atc-small` on English ones, detecting the language per clip and choosing the model accordingly is worth
 building into the timeline. With only a few German clips in the set, the German figures aren't reliable;
-add German clips with `--add 15 --lang de` (see "Adding clips").
+add German clips with **Browse archive** (see "Adding clips").
 
 ## Using the winner
 
