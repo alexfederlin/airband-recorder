@@ -72,8 +72,26 @@ and copies them into `data/`. Later starts keep the same set and don't need the 
 - **Replace clip** swaps a clip that's unusable for another random one.
 - What the live timeline produced is hidden under a fold, so it doesn't steer your transcript.
 
-Options, e.g. `docker compose run --rm --service-ports transcribe --count 30`: `--count 30` adds clips up to 30,
-`--min-duration` / `--max-duration` change the length filter, `--seed 1` makes the selection repeatable.
+### Adding clips
+
+Existing clips and transcripts are always kept; new clips are numbered after them. Stop the running page
+first (`docker compose down`), then start it with options:
+
+```bash
+docker compose run --rm --service-ports transcribe --add 15 --lang de
+```
+
+| Option | Effect |
+|---|---|
+| `--add 15` | Adds 15 random clips to the set (`--count 30` instead tops it up to 30 in total) |
+| `--lang de` | Adds only clips Whisper detects as German. Each candidate takes a few seconds to check with `whisper-cli --detect-language`; results are cached in `data/detected.json`. While the page runs with `--lang`, **Replace clip** also picks a German clip |
+| `--detect-model base` | Model for the detection (downloaded into `models/` if missing). `tiny` is faster, `small` more reliable |
+| `--min-prob 0.5` | Clips detected with lower confidence count as unsure and are skipped |
+| `--min-duration` / `--max-duration` | Length filter in seconds (default 1.5 to 30) |
+| `--seed 1` | Makes the random selection repeatable |
+
+Whisper's guess is shown next to the language buttons as a hint; tag the clip yourself once you've heard it.
+Language detection on short, noisy radio clips makes mistakes, so expect the odd English clip among them.
 To start a fresh set, delete `data/`.
 
 ### Listening filters
@@ -193,7 +211,7 @@ from the fine-tuning. The German entries compare the options:
 columns and the "Best per language" line matter: if a German configuration wins on German clips and
 `atc-small` on English ones, detecting the language per clip and choosing the model accordingly is worth
 building into the timeline. With only a few German clips in the set, the German figures aren't reliable;
-add clips with `--count` and transcribe the German ones.
+add German clips with `--add 15 --lang de` (see "Adding clips").
 
 ## Using the winner
 

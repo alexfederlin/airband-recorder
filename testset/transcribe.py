@@ -12,6 +12,7 @@ Uses only the Python standard library.
 
     python3 transcribe.py                 # select 20 clips (first run) and serve
     python3 transcribe.py --count 30      # select more if the set has fewer
+    python3 transcribe.py --add 15 --lang de   # add 15 clips Whisper detects as German
 """
 import argparse
 import collections
@@ -20,7 +21,9 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -92,8 +95,9 @@ class TestSet:
                 by_day[day.name].append((source, wav, meta))
         return by_day
 
-    def pick(self, n, min_dur, max_dur, rng):
-        """Picks n clips, spread round-robin over the days in the archive."""
+    def pick(self, n, min_dur, max_dur, rng, accept=None):
+        """Picks n clips, spread round-robin over the days in the archive.
+        accept(source, wav) can turn candidates down (e.g. wrong language)."""
         by_day = self.candidates(min_dur, max_dur)
         for clips in by_day.values():
             rng.shuffle(clips)
@@ -105,7 +109,10 @@ class TestSet:
                 if not by_day[day]:
                     days.remove(day)
                     continue
-                picked.append(by_day[day].pop())
+                candidate = by_day[day].pop()
+                if accept and not accept(candidate[0], candidate[1]):
+                    continue
+                picked.append(candidate)
                 if len(picked) >= n:
                     break
         return picked
@@ -114,7 +121,7 @@ class TestSet:
         self.clips_dir.mkdir(parents=True, exist_ok=True)
         audio = f"{clip_id}_{source.replace('/', '_')}"
         shutil.copy2(wav, self.clips_dir / audio)
-        return {
+        entry = {
             "id": clip_id,
             "audio": f"clips/{audio}",
             "source": source,
@@ -128,6 +135,14 @@ class TestSet:
             "notes": "",
             "updated_at": None,
         }
+        if self.detector and source in self.detector.cache:
+            entry["detected_lang"] = self.detector.cache[source]
+        return entry
+
+    detector = None   # a LanguageDetector when clips are filtered by language
+
+    def accept(self, source, wav):
+        return self.detector.accept(source, wav) if self.detector else True
 
     def fill(self, count, min_dur, max_dur, seed):
         missing = count - len(self.clips)
@@ -135,18 +150,19 @@ class TestSet:
             return 0
         rng = random.Random(seed)
         next_num = max([int(c["id"]) for c in self.clips] + [0]) + 1
-        for source, wav, meta in self.pick(missing, min_dur, max_dur, rng):
+        for source, wav, meta in self.pick(missing, min_dur, max_dur, rng, self.accept):
             self.clips.append(self.make_entry(f"{next_num:02d}", source, wav, meta))
             next_num += 1
         self.save()
         return len(self.clips) - (count - missing)
 
     def replace(self, clip_id, min_dur, max_dur):
-        """Swaps a clip for a fresh random one; the old one is never picked again."""
+        """Swaps a clip for a fresh random one (in the selected language, if
+        one was given); the old one is never picked again."""
         old = self.get(clip_id)
         if old is None:
             return None
-        picked = self.pick(1, min_dur, max_dur, random.Random())
+        picked = self.pick(1, min_dur, max_dur, random.Random(), self.accept)
         if not picked:
             return None
         self.doc.setdefault("rejected", []).append(old["source"])
@@ -158,6 +174,65 @@ class TestSet:
         self.clips[self.clips.index(old)] = new
         self.save()
         return new
+
+
+# --- Language filter ------------------------------------------------------------
+
+MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin"
+
+
+class LanguageDetector:
+    """Accepts only clips Whisper detects as `lang`. Uses whisper-cli's
+    --detect-language, which stops after the first 30 s window's language
+    guess, so it's much faster than transcribing. Results are cached in
+    DATA/detected.json, so clips are checked only once."""
+
+    def __init__(self, lang, model, whisper_bin, data, min_prob):
+        self.lang = lang
+        self.model = self.find_model(model)
+        self.whisper_bin = whisper_bin
+        self.min_prob = min_prob
+        self.cache_path = Path(data) / "detected.json"
+        try:
+            self.cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.cache = {}
+        self.checked = self.found = 0
+
+    @staticmethod
+    def find_model(name):
+        path = Path(name)
+        if path.suffix == ".bin":
+            return path
+        path = HERE / "models" / f"ggml-{name}.bin"   # shared with benchmark.py
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            log(f"Downloading the {name} model for language detection")
+            tmp = path.with_name(path.name + ".part")
+            urllib.request.urlretrieve(MODEL_URL.format(name), tmp)
+            os.replace(tmp, path)
+        return path
+
+    def detect(self, wav):
+        res = subprocess.run([self.whisper_bin, "-m", str(self.model), "-f", str(wav), "-dl",
+                              "-t", str(os.cpu_count() or 2)],
+                             capture_output=True, text=True, timeout=300)
+        m = re.search(r"auto-detected language: (\w+) \(p = ([\d.]+)\)", res.stderr + res.stdout)
+        if not m:
+            raise RuntimeError(f"no language detected for {wav.name} (whisper exit {res.returncode})")
+        lang, prob = m.group(1), float(m.group(2))
+        return lang if prob >= self.min_prob else f"{lang}?"   # "de?" = unsure
+
+    def accept(self, source, wav):
+        if source not in self.cache:
+            self.cache[source] = self.detect(wav)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_path.write_text(json.dumps(self.cache, indent=1), encoding="utf-8")
+        self.checked += 1
+        hit = self.cache[source] == self.lang
+        self.found += hit
+        print(f"\r  checked {self.checked} clips, {self.found} in {self.lang}", end="", flush=True)
+        return hit
 
 
 # --- HTTP ---------------------------------------------------------------------
@@ -384,7 +459,7 @@ async function select(id) {
     <div class="row">
       <button class="b lang" data-l="en">English</button>
       <button class="b lang" data-l="de">German</button>
-      <span class="muted">Untagged clips are guessed from the transcript when scoring.</span>
+      <span class="muted">${cur.detected_lang ? `Whisper detected “${escapeHtml(cur.detected_lang)}”. ` : ""}Untagged clips are guessed from the transcript when scoring.</span>
     </div>
     <div class="row" style="margin-top:12px">
       <button class="b primary" id="savenext">Save &amp; next</button>
@@ -694,14 +769,30 @@ def main():
     p.add_argument("--min-duration", type=float, default=1.5, help="skip shorter clips (s)")
     p.add_argument("--max-duration", type=float, default=30.0, help="skip longer clips (s)")
     p.add_argument("--seed", type=int, default=None, help="random seed for the selection")
+    p.add_argument("--add", type=int, default=0, help="add this many clips to the existing set")
+    p.add_argument("--lang", help="add only clips Whisper detects in this language, e.g. de")
+    p.add_argument("--detect-model", default="base",
+                   help="model for --lang detection (default base; downloaded into models/ if missing)")
+    p.add_argument("--min-prob", type=float, default=0.5,
+                   help="detection probability below which a clip counts as unsure and is skipped")
+    p.add_argument("--whisper-bin", default=os.environ.get("WHISPER_BIN", "/usr/local/bin/whisper-cli"))
     p.add_argument("--port", type=int, default=8091)
     opts = p.parse_args()
 
     testset = TestSet(opts.data, opts.archive)
-    added = testset.fill(opts.count, opts.min_duration, opts.max_duration, opts.seed)
+    count = max(opts.count, len(testset.clips) + opts.add)
+    if opts.lang:
+        testset.detector = LanguageDetector(opts.lang, opts.detect_model, opts.whisper_bin,
+                                            opts.data, opts.min_prob)
+        if count > len(testset.clips):
+            log(f"Looking for {count - len(testset.clips)} clips in '{opts.lang}' "
+                f"(each candidate takes a few seconds to check)")
+    added = testset.fill(count, opts.min_duration, opts.max_duration, opts.seed)
+    if testset.detector and testset.detector.checked:
+        print()
     if added:
         log(f"Selected {added} new clips from {opts.archive}")
-    if len(testset.clips) < opts.count:
+    if len(testset.clips) < count:
         log(f"Only {len(testset.clips)} suitable clips found in {opts.archive}")
     done = sum(c["reference"] is not None for c in testset.clips)
     log(f"Test set: {testset.path} ({done}/{len(testset.clips)} transcribed)")
