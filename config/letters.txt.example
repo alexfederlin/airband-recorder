@@ -5,6 +5,10 @@
 # count as the letter, so the timeline shows D-EARN. Anywhere else they stay as
 # they are, so "home" in an ordinary sentence is not touched.
 #
+# A word you map to Delta ("Welter = Delta") can also start a callsign, so
+# "Welter India Sierra" becomes D-IS. Only add words for Delta that don't occur
+# in ordinary speech, because each one followed by two letter words counts.
+#
 # One entry per line: the heard word (one word, any case), "=", and the letter
 # word or the letter itself. Lines starting with # are ignored. Changes apply on
 # the next page load; no restart needed.
@@ -20,3 +24,4 @@
 # Examples:
 # homey = Romeo
 # hotell = H
+# welter = Delta

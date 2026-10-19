@@ -217,8 +217,9 @@ def callsign_pattern(query):
     any_letter = "|".join(letter_words(ch, aliases) for ch in NATO_WORDS)
     # Short form: up to two more letters may come first (D-RN finds D-EARN too)
     lead = f"(?:{sep}(?:{any_letter})){{0,2}}" if len(letters) == 2 else ""
-    spoken = re.compile(r"\bdelta" + lead + "".join(f"{sep}(?:{letter_words(ch, aliases)})" for ch in letters)
-                        + r"\b", re.I)
+    # Starts with "Delta" or a word letters.txt maps to Delta ("Welter = Delta")
+    spoken = re.compile(rf"\b(?:{letter_words('D', aliases)})" + lead
+                        + "".join(f"{sep}(?:{letter_words(ch, aliases)})" for ch in letters) + r"\b", re.I)
     # Written in capitals: D-EARN, DEARN, D-E-A-R-N, Delta EARN. Case matters,
     # so ordinary words (Dorn) don't count
     lead = "(?:[A-Z]-?){0,2}" if len(letters) == 2 else ""

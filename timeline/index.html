@@ -320,7 +320,7 @@
       add(m.index, m.index + m[0].length, letters, letters.length === 4 ? 'full' : 'short');
     }
     // Spoken in NATO words; words may be separated by spaces, hyphens or commas.
-    // After "Delta", words Whisper hears instead of a letter word (ALIASES,
+    // Within a callsign, words Whisper hears instead of a letter word (ALIASES,
     // e.g. "homie" for Romeo) count as that letter.
     const words = [...text.matchAll(/x-ray|[a-zäöüß]+/gi)].map((m) => {
       const w = m[0].toLowerCase();
@@ -334,7 +334,9 @@
     const spaced = (a, b) => /^[\s\-]*$/.test(text.slice(a.end, b.start));
     let used = -1;                         // index of the last word that belongs to a found callsign
     for (let i = 0; i < words.length; i++) {
-      if (words[i].nato !== 'D') continue;
+      // A callsign starts with "Delta", or a word that letters.txt says is a misheard
+      // Delta ("Welter = Delta"); built-in aliases include none for Delta
+      if (words[i].letter !== 'D') continue;
       // Inside a spelled-out sequence that isn't a German callsign (the D of
       // "Oscar Echo Delta Lima Romeo"): two letter words right before, not part of
       // a callsign found already. One letter word before ("via Alfa and Bravo

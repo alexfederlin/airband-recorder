@@ -136,7 +136,8 @@ across all days.
 
 Whisper sometimes hears a letter word as something else, e.g. "homie" for Romeo. Common cases are built in; add
 your own to `config/letters.txt` (copy `config/letters.txt.example`), one `heard = letter word` per line, then reload
-the page. These words only count as letters inside a spelled-out callsign. For names that are always wrong (for
+the page. These words only count as letters inside a spelled-out callsign; a word you map to Delta
+(`welter = Delta`) can also start one. For names that are always wrong (for
 example the tower's), a better prompt helps more: see `WHISPER_PROMPT` and the test set's Prompt lab.
 
 ## Managing the containers
