@@ -286,11 +286,78 @@
     return d.toLocaleDateString('en-GB', opts);
   };
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // --- Callsigns ----------------------------------------------------------------
+  // German registrations: D plus four letters, the first of them A-P without D
+  // and J (D-EGLR, "Delta Echo Golf Lima Romeo"), or abbreviated to D plus the
+  // last two letters (D-LR, "Delta Lima Romeo"). Returns [start, end] ranges.
+  const NATO = {
+    alpha: 'A', alfa: 'A', bravo: 'B', charlie: 'C', delta: 'D', echo: 'E', foxtrot: 'F', golf: 'G',
+    hotel: 'H', india: 'I', juliett: 'J', juliet: 'J', kilo: 'K', lima: 'L', mike: 'M', november: 'N',
+    oscar: 'O', papa: 'P', quebec: 'Q', romeo: 'R', sierra: 'S', tango: 'T', uniform: 'U', victor: 'V',
+    whiskey: 'W', whisky: 'W', 'x-ray': 'X', xray: 'X', yankee: 'Y', zulu: 'Z',
+  };
+  const SECOND = /^[A-CE-IK-P]$/;          // first letter after D: A-P without D and J
+  const callsignRanges = (text) => {
+    const ranges = [];
+    // Written as letters: D-EGLR, DEGLR, D-E-G-L-R, D-LR, or mixed: Delta EGLR, Delta LR
+    const written = /\bD-?(?!ELTA\b)[A-CE-IK-P][A-Z]{3}\b|\bD-[A-CE-IK-P](?:-[A-Z]){3}\b|\bD-[A-Z]{2}\b|\bDelta[ -](?:[A-CE-IK-P][A-Z]{3}|[A-Z]{2})\b/g;
+    for (const m of text.matchAll(written)) ranges.push([m.index, m.index + m[0].length]);
+    // Spoken in NATO words; words may be separated by spaces, hyphens or commas
+    const words = [...text.matchAll(/x-ray|[a-z]+/gi)].map((m) => ({
+      start: m.index, end: m.index + m[0].length, letter: NATO[m[0].toLowerCase()] || null }));
+    const gapOk = (a, b) => /^[\s,\-]*$/.test(text.slice(a.end, b.start));
+    const full = [], partial = [];     // spelled-out full callsigns, and Delta + 3 letters
+    for (let i = 0; i < words.length; i++) {
+      if (words[i].letter !== 'D') continue;
+      // Inside a spelled-out sequence (e.g. the D of D-EDKL), not the start of a callsign
+      if (i > 0 && words[i - 1].letter && /^[\s\-]*$/.test(text.slice(words[i - 1].end, words[i].start))) continue;
+      // Does word b continue the spelled-out letters before it (word a)?
+      // "Delta Lima Romeo, Delta Echo ..." is two callsigns, not one
+      const continues = (a, b) => b && b.letter && gapOk(a, b) &&
+        !(b.letter === 'D' && /,/.test(text.slice(a.end, b.start)));
+      const run = [];
+      for (let j = i + 1; j < words.length && run.length < 4; j++) {
+        if (!continues(words[j - 1], words[j])) break;
+        run.push(words[j]);
+      }
+      const moreLetters = continues(run[run.length - 1] || words[i], words[i + 1 + run.length]);
+      let last = null;
+      if (run.length === 4 && SECOND.test(run[0].letter)) { last = run[3]; full.push(run.map((w) => w.letter).join('')); }
+      else if (run.length === 2 && !moreLetters) last = run[1];
+      else if (run.length === 3 && !moreLetters) partial.push([words[i].start, run[2].end, run.map((w) => w.letter).join('')]);
+      if (last) {
+        ranges.push([words[i].start, last.end]);
+        i += run.indexOf(last) + 1;
+      }
+    }
+    // Delta plus three letters: a full callsign from the same transmission with one
+    // letter lost ("Delta Echo Romeo November" next to "Delta Echo Alpha Romeo November")
+    for (const [s, e, letters] of partial) {
+      if (full.some((f) => [0, 1, 2, 3].some((k) => f.slice(0, k) + f.slice(k + 1) === letters))) ranges.push([s, e]);
+    }
+    return ranges;
+  };
+
+  // Escapes a transcript and marks callsigns (bold) and search hits (<mark>).
+  // Both are found as ranges in the raw text, so their tags never interfere.
   const highlight = (text) => {
-    const safe = esc(text);
-    if (!state.q) return safe;
-    const re = new RegExp(esc(state.q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    return safe.replace(re, (m) => `<mark>${m}</mark>`);
+    const marks = callsignRanges(text).map(([s, e]) => [s, e, 'b']);
+    if (state.q) {
+      const re = new RegExp(state.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      for (const m of text.matchAll(re)) if (m[0]) marks.push([m.index, m.index + m[0].length, 'mark']);
+    }
+    if (!marks.length) return esc(text);
+    const cuts = [...new Set([0, text.length, ...marks.flatMap(([s, e]) => [s, e])])].sort((a, b) => a - b);
+    let html = '';
+    for (let k = 0; k < cuts.length - 1; k++) {
+      const [s, e] = [cuts[k], cuts[k + 1]];
+      let part = esc(text.slice(s, e));
+      for (const tag of ['mark', 'b']) {
+        if (marks.some(([ms, me, t]) => t === tag && ms <= s && e <= me)) part = `<${tag}>${part}</${tag}>`;
+      }
+      html += part;
+    }
+    return html;
   };
   const transcriptOf = (c) => {
     if (c.status === 'pending') {
@@ -543,12 +610,12 @@
     } else if (c) {
       when = `${timeOf(c.start)}\u2002${dur(c.duration || 0)}`;
       const [cls, text] = transcriptOf(c);
-      what = cls ? text : c.transcript;
+      what = cls ? esc(text) : text;     // transcriptOf escapes transcripts and bolds callsigns
     } else if (state.visible.length) {
       what = 'Press play to start with the first transmission';
     }
     $('#nowWhen').textContent = when;
-    $('#nowWhat').textContent = what;
+    $('#nowWhat').innerHTML = what;
     if (!c) $('#progBar').style.width = '0';
 
     $('#speed').innerHTML = SPEEDS.map((s) =>
