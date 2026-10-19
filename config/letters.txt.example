@@ -1,0 +1,22 @@
+# Words Whisper hears instead of a letter of the phonetic alphabet.
+# Copy this file to letters.txt (same folder) and add your own.
+#
+# Inside a spelled-out callsign ("Delta Echo Alpha homie November") these words
+# count as the letter, so the timeline shows D-EARN. Anywhere else they stay as
+# they are, so "home" in an ordinary sentence is not touched.
+#
+# One entry per line: the heard word (one word, any case), "=", and the letter
+# word or the letter itself. Lines starting with # are ignored. Changes apply on
+# the next page load; no restart needed.
+#
+# Built in already (no need to repeat them):
+#   homie, home, romy, romio, rome = Romeo      gulf = Golf
+#   killo, kilow = Kilo                         oskar = Oscar
+#   charly, charley = Charlie                   leema, lema = Lima
+#   eko, ekko = Echo                            foxtrott = Foxtrot
+#   pappa = Papa    siera = Sierra    wiskey = Whiskey
+#   juliette = Juliett    yanky = Yankee
+#
+# Examples:
+# homey = Romeo
+# hotell = H

@@ -160,6 +160,49 @@ NATO_WORDS = {
     "S": "sierra", "T": "tango", "U": "uniform", "V": "victor", "W": "whiskey|whisky",
     "X": "x-ray|xray", "Y": "yankee", "Z": "zulu",
 }
+LETTER_OF = {w: letter for letter, words in NATO_WORDS.items() for w in words.split("|")}
+
+# Words Whisper hears instead of a letter word ("homie" for Romeo). Inside a
+# spelled-out callsign they count as that letter; elsewhere they stay as they
+# are. Built in, plus one "heard = letter" per line in LETTERS_FILE.
+LETTERS_FILE = Path(os.environ.get("LETTERS_FILE", "/config/letters.txt"))
+BUILTIN_ALIASES = {
+    "homie": "R", "home": "R", "romy": "R", "romio": "R", "rome": "R",
+    "gulf": "G", "killo": "K", "kilow": "K", "oskar": "O", "charly": "C", "charley": "C",
+    "leema": "L", "lema": "L", "eko": "E", "ekko": "E", "foxtrott": "F", "pappa": "P",
+    "siera": "S", "wiskey": "W", "juliette": "J", "yanky": "Y",
+}
+_aliases = {"mtime": None, "map": None}
+
+
+def letter_aliases():
+    """{heard word: letter}, built-in and from LETTERS_FILE (re-read when it changes)."""
+    try:
+        mtime = LETTERS_FILE.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    if _aliases["map"] is not None and _aliases["mtime"] == mtime:
+        return _aliases["map"]
+    aliases = dict(BUILTIN_ALIASES)
+    if mtime is not None:
+        for n, line in enumerate(LETTERS_FILE.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            heard, sep, letter = (part.strip() for part in line.partition("="))
+            heard = heard.lower()
+            code = letter.upper() if len(letter) == 1 and letter.isalpha() else LETTER_OF.get(letter.lower())
+            if not sep or not heard or " " in heard or not code:
+                log(f"{LETTERS_FILE.name} line {n} ignored, expected 'heard = letter word': {line}")
+                continue
+            aliases[heard] = code
+    _aliases.update(mtime=mtime, map=aliases)
+    return aliases
+
+
+def letter_words(letter, aliases):
+    """Regex alternatives for one letter: its NATO word(s) and the words heard instead."""
+    return "|".join([NATO_WORDS[letter]] + [re.escape(w) for w, l in aliases.items() if l == letter])
 
 
 def callsign_pattern(query):
@@ -169,11 +212,13 @@ def callsign_pattern(query):
     if not m:
         return None
     letters = m.group(1).upper()
+    aliases = letter_aliases()
     sep = r"[\s,-]+"
-    any_letter = "|".join(NATO_WORDS.values())
+    any_letter = "|".join(letter_words(ch, aliases) for ch in NATO_WORDS)
     # Short form: up to two more letters may come first (D-RN finds D-EARN too)
     lead = f"(?:{sep}(?:{any_letter})){{0,2}}" if len(letters) == 2 else ""
-    spoken = re.compile(r"\bdelta" + lead + "".join(f"{sep}(?:{NATO_WORDS[ch]})" for ch in letters) + r"\b", re.I)
+    spoken = re.compile(r"\bdelta" + lead + "".join(f"{sep}(?:{letter_words(ch, aliases)})" for ch in letters)
+                        + r"\b", re.I)
     # Written in capitals: D-EARN, DEARN, D-E-A-R-N, Delta EARN. Case matters,
     # so ordinary words (Dorn) don't count
     lead = "(?:[A-Z]-?){0,2}" if len(letters) == 2 else ""
@@ -364,6 +409,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(dict(self.status_info(),
                                     today=datetime.date.today().isoformat(),
                                     date=day, clips=clips_for_day(day)))
+            elif path == "/api/letters":
+                self.send_json({"aliases": letter_aliases()})
             elif path == "/api/search":
                 query = parse_qs(url.query).get("q", [""])[0].strip()
                 results = search(query) if len(query) >= 2 else []

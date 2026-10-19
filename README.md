@@ -126,6 +126,19 @@ In the timeline, pick a day at the top, click the activity strip to jump to a ti
 
 Transcripts often garble callsigns and numbers; use them to find clips, then listen.
 
+### Callsigns
+
+German registrations are recognised in the transcripts and shown in letters: "Delta Echo Alpha Romeo November"
+becomes **D-EARN**, both in the transcript and in the callsign column next to it. The short form ("Delta Romeo
+November") and a callsign with one letter lost or misheard become the full callsign when that is spoken in the same
+transmission; otherwise a short form shows as D-RN. Searching for D-EARN or D-RN finds the spoken forms too, also
+across all days.
+
+Whisper sometimes hears a letter word as something else, e.g. "homie" for Romeo. Common cases are built in; add
+your own to `config/letters.txt` (copy `config/letters.txt.example`), one `heard = letter word` per line, then reload
+the page. These words only count as letters inside a spelled-out callsign. For names that are always wrong (for
+example the tower's), a better prompt helps more: see `WHISPER_PROMPT` and the test set's Prompt lab.
+
 ## Managing the containers
 
 Run these in the repository folder. The service names are `recorder`, `timeline` and (if turned on) `rdio-scanner`.

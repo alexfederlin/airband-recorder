@@ -303,6 +303,9 @@
     whiskey: 'W', whisky: 'W', 'x-ray': 'X', xray: 'X', yankee: 'Y', zulu: 'Z',
   };
   const SECOND = /^[A-CE-IK-P]$/;          // first letter after D: A-P without D and J
+  // Words Whisper hears instead of letter words ({homie: 'R'}), from the server:
+  // built in plus config/letters.txt. Loaded at start, see start()
+  let ALIASES = {};
   // Returns the callsigns in a transcript as [{start, end, cs}] in text order,
   // cs in letters (D-EARN). A short form, or a full one with a letter lost,
   // becomes the full callsign when that appears in the same transmission;
@@ -316,36 +319,58 @@
       const letters = m[0].replace(/^Delta[ -]|^D-?/, '').replace(/-/g, '');
       add(m.index, m.index + m[0].length, letters, letters.length === 4 ? 'full' : 'short');
     }
-    // Spoken in NATO words; words may be separated by spaces, hyphens or commas
-    const words = [...text.matchAll(/x-ray|[a-z]+/gi)].map((m) => ({
-      start: m.index, end: m.index + m[0].length, letter: NATO[m[0].toLowerCase()] || null }));
+    // Spoken in NATO words; words may be separated by spaces, hyphens or commas.
+    // After "Delta", words Whisper hears instead of a letter word (ALIASES,
+    // e.g. "homie" for Romeo) count as that letter.
+    const words = [...text.matchAll(/x-ray|[a-zäöüß]+/gi)].map((m) => {
+      const w = m[0].toLowerCase();
+      return { start: m.index, end: m.index + m[0].length, nato: NATO[w] || null, letter: NATO[w] || ALIASES[w] || null };
+    });
     const gapOk = (a, b) => /^[\s,\-]*$/.test(text.slice(a.end, b.start));
+    // Does word b continue the spelled-out letters before it (word a)?
+    // "Delta Lima Romeo, Delta Echo ..." is two callsigns, not one
+    const continues = (a, b) => b && b.letter && gapOk(a, b) &&
+      !(b.letter === 'D' && /,/.test(text.slice(a.end, b.start)));
+    const spaced = (a, b) => /^[\s\-]*$/.test(text.slice(a.end, b.start));
+    let used = -1;                         // index of the last word that belongs to a found callsign
     for (let i = 0; i < words.length; i++) {
-      if (words[i].letter !== 'D') continue;
-      // Inside a spelled-out sequence (e.g. the D of D-EDKL), not the start of a callsign
-      if (i > 0 && words[i - 1].letter && /^[\s\-]*$/.test(text.slice(words[i - 1].end, words[i].start))) continue;
-      // Does word b continue the spelled-out letters before it (word a)?
-      // "Delta Lima Romeo, Delta Echo ..." is two callsigns, not one
-      const continues = (a, b) => b && b.letter && gapOk(a, b) &&
-        !(b.letter === 'D' && /,/.test(text.slice(a.end, b.start)));
+      if (words[i].nato !== 'D') continue;
+      // Inside a spelled-out sequence that isn't a German callsign (the D of
+      // "Oscar Echo Delta Lima Romeo"): two letter words right before, not part of
+      // a callsign found already. One letter word before ("via Alfa and Bravo
+      // Delta Echo ...") doesn't count.
+      if (i >= 2 && i - 2 > used && words[i - 1].nato && words[i - 2].nato
+          && spaced(words[i - 2], words[i - 1]) && spaced(words[i - 1], words[i])) continue;
+      // Collect up to four letters. One unknown word between letters is a letter
+      // Whisper got wrong ("Delta Echo Alpha [?] November"), held as "?"
       const run = [];
+      let hole = false;
       for (let j = i + 1; j < words.length && run.length < 4; j++) {
-        if (!continues(words[j - 1], words[j])) break;
-        run.push(words[j]);
+        if (continues(words[j - 1], words[j])) { run.push(words[j]); continue; }
+        const next = words[j + 1];
+        if (!hole && run.length >= 1 && !words[j].letter && gapOk(words[j - 1], words[j])
+            && continues(words[j], next) && next.nato !== 'D') {
+          hole = true;
+          run.push({ ...words[j], letter: '?' });
+          continue;
+        }
+        break;
       }
       const moreLetters = continues(run[run.length - 1] || words[i], words[i + 1 + run.length]);
       const letters = (n) => run.slice(0, n).map((w) => w.letter).join('');
-      if (run.length === 4 && SECOND.test(run[0].letter)) {
-        add(words[i].start, run[3].end, letters(4), 'full');
-        i += 4;
-      } else if (run.length === 2 && !moreLetters) {
+      if (run.length === 4 && (run[0].letter === '?' || SECOND.test(run[0].letter)) && !(hole && moreLetters)) {
+        add(words[i].start, run[3].end, letters(4), hole ? 'garbled' : 'full');
+        i = used = i + 4;
+      } else if (!hole && run.length === 2 && !moreLetters) {
         add(words[i].start, run[1].end, letters(2), 'short');
-        i += 2;
-      } else if (run.length === 3 && !moreLetters) {
+        i = used = i + 2;
+      } else if (!hole && run.length === 3 && !moreLetters) {
         // Delta plus three letters: probably a full callsign with a letter Whisper lost
         add(words[i].start, run[2].end, letters(3), 'partial');
-        i += 3;
+        i = used = i + 3;
       }
+      // Anything else (e.g. a garbled letter after only two) is no callsign:
+      // better none than a wrong short form like D-EA
     }
     const fulls = found.filter((f) => f.kind === 'full').map((f) => f.letters);
     const result = [];
@@ -357,9 +382,11 @@
         // Only next to the full callsign it comes from, e.g. "Delta Echo Romeo
         // November" next to "Delta Echo Alpha Romeo November"
         letters = fulls.find((x) => [0, 1, 2, 3].some((k) => x.slice(0, k) + x.slice(k + 1) === f.letters));
-        if (!letters) continue;
+      } else if (f.kind === 'garbled') {
+        // One wrong letter: only next to a full callsign it matches otherwise
+        letters = fulls.find((x) => [...f.letters].every((ch, k) => ch === '?' || ch === x[k]));
       }
-      result.push({ start: f.start, end: f.end, cs: 'D-' + letters });
+      if (letters) result.push({ start: f.start, end: f.end, cs: 'D-' + letters });
     }
     return result.sort((a, b) => a.start - b.start);
   };
@@ -848,6 +875,8 @@
   // --- Start ----------------------------------------------------------------
   async function start() {
     renderTicks();
+    // Misheard letter words for callsign recognition; without them it still works
+    try { ALIASES = (await api('/api/letters')).aliases || {}; } catch (e) { /* older server */ }
     try {
       await loadDays();
       const wanted = location.hash.slice(1);

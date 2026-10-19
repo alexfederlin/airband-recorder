@@ -68,3 +68,4 @@ services:
     volumes:
       - ${ARCHIVE_DIR:-./data/archive}:/data/archive
       - ./models:/extra-models:ro
+      - ./config:/config:ro           # letters.txt: misheard letter words for callsigns
