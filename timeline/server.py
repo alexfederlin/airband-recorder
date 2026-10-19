@@ -149,12 +149,46 @@ def list_days():
     return days
 
 
+# A search for a callsign in letters (D-EARN) also finds it spelled out
+# ("Delta Echo Alpha Romeo November") or written without the hyphen. A search for
+# a short form (D-RN) also finds the full callsigns ending in it.
+CALLSIGN_QUERY = re.compile(r"^d-?([a-z]{2}|[a-z]{4})$", re.I)
+NATO_WORDS = {
+    "A": "alpha|alfa", "B": "bravo", "C": "charlie", "D": "delta", "E": "echo", "F": "foxtrot",
+    "G": "golf", "H": "hotel", "I": "india", "J": "juliett|juliet", "K": "kilo", "L": "lima",
+    "M": "mike", "N": "november", "O": "oscar", "P": "papa", "Q": "quebec", "R": "romeo",
+    "S": "sierra", "T": "tango", "U": "uniform", "V": "victor", "W": "whiskey|whisky",
+    "X": "x-ray|xray", "Y": "yankee", "Z": "zulu",
+}
+
+
+def callsign_pattern(query):
+    """A function telling whether a transcript mentions the callsign in a query
+    like D-EARN or D-RN, or None if the query isn't a callsign."""
+    m = CALLSIGN_QUERY.match(query.strip())
+    if not m:
+        return None
+    letters = m.group(1).upper()
+    sep = r"[\s,-]+"
+    any_letter = "|".join(NATO_WORDS.values())
+    # Short form: up to two more letters may come first (D-RN finds D-EARN too)
+    lead = f"(?:{sep}(?:{any_letter})){{0,2}}" if len(letters) == 2 else ""
+    spoken = re.compile(r"\bdelta" + lead + "".join(f"{sep}(?:{NATO_WORDS[ch]})" for ch in letters) + r"\b", re.I)
+    # Written in capitals: D-EARN, DEARN, D-E-A-R-N, Delta EARN. Case matters,
+    # so ordinary words (Dorn) don't count
+    lead = "(?:[A-Z]-?){0,2}" if len(letters) == 2 else ""
+    written = re.compile(r"\b(?:D-?|Delta[ -])" + lead + "-?".join(letters) + r"\b")
+    return lambda text: bool(spoken.search(text) or written.search(text))
+
+
 def search(query, limit=300):
     q = query.lower()
+    pattern = callsign_pattern(query)
     results = []
     for folder in day_dirs():
         for clip in reversed(clips_for_day(folder.name)):
-            if clip["transcript"] and q in clip["transcript"].lower():
+            text = clip["transcript"]
+            if text and (q in text.lower() or (pattern and pattern(text))):
                 results.append(dict(clip, date=folder.name))
                 if len(results) >= limit:
                     return results

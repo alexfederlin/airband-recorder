@@ -109,7 +109,7 @@
   ol.calls { list-style: none; margin: 0; padding: 0; }
   .call { margin: 4px 0; scroll-margin-bottom: 130px; }
   .call button {
-    display: grid; grid-template-columns: 6em 4.5em minmax(0, 1fr);
+    display: grid; grid-template-columns: 6em 4.5em 7em minmax(0, 1fr);
     width: 100%; padding: 0; text-align: left; cursor: pointer;
     background: var(--strip);
     border: 1px solid var(--rule); border-left: 6px solid var(--bar); border-radius: 3px;
@@ -117,8 +117,12 @@
   .call button > span { padding: 9px 12px; }
   .call .t { font-weight: 600; border-right: 1px solid var(--rule); }
   .call .d { border-right: 1px solid var(--rule); color: var(--muted); font-size: 15px; }
+  .call .cs { border-right: 1px solid var(--rule); font-weight: 600; font-size: 15px; line-height: 1.5;
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em; white-space: nowrap; }
+  .call .cs i { display: block; font-style: normal; }
   .call .tx { overflow-wrap: anywhere; max-width: 75ch; }
   .call .tx.quiet { color: var(--muted); font-style: italic; }
+  .call .tx b, .now .what b { white-space: nowrap; }   /* never break a callsign at its hyphen */
   .call .date { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
   .call button:hover { border-color: var(--muted); border-left-color: var(--bar); }
   .call.current button { background: var(--amber-soft); border-left-color: var(--amber); }
@@ -167,8 +171,10 @@
     .daynav select { font-size: 22px; }
     .search { margin-left: 0; width: 100%; }
     .search input[type=search] { flex: 1; width: auto; }
-    .call button { grid-template-columns: auto minmax(0, 1fr); }
-    .call .d { border-right: 0; }
+    .call button { grid-template-columns: auto auto minmax(0, 1fr); }
+    .call .cs { border-right: 0; }
+    .call .cs:empty { display: none; }
+    .call .cs i { display: inline; margin-right: 0.6em; }
     .call .tx { grid-column: 1 / -1; border-top: 1px solid var(--rule); }
     .gap { padding-left: 8px; }
     .ticks .odd { display: none; }
@@ -289,7 +295,7 @@
   // --- Callsigns ----------------------------------------------------------------
   // German registrations: D plus four letters, the first of them A-P without D
   // and J (D-EGLR, "Delta Echo Golf Lima Romeo"), or abbreviated to D plus the
-  // last two letters (D-LR, "Delta Lima Romeo"). Returns [start, end] ranges.
+  // last two letters (D-LR, "Delta Lima Romeo"). Transcripts show them in letters.
   const NATO = {
     alpha: 'A', alfa: 'A', bravo: 'B', charlie: 'C', delta: 'D', echo: 'E', foxtrot: 'F', golf: 'G',
     hotel: 'H', india: 'I', juliett: 'J', juliet: 'J', kilo: 'K', lima: 'L', mike: 'M', november: 'N',
@@ -297,16 +303,23 @@
     whiskey: 'W', whisky: 'W', 'x-ray': 'X', xray: 'X', yankee: 'Y', zulu: 'Z',
   };
   const SECOND = /^[A-CE-IK-P]$/;          // first letter after D: A-P without D and J
-  const callsignRanges = (text) => {
-    const ranges = [];
+  // Returns the callsigns in a transcript as [{start, end, cs}] in text order,
+  // cs in letters (D-EARN). A short form, or a full one with a letter lost,
+  // becomes the full callsign when that appears in the same transmission;
+  // otherwise a short form is written D plus its two letters (D-RN).
+  const findCallsigns = (text) => {
+    const found = [];                      // {start, end, letters, kind: full | short | partial}
+    const add = (start, end, letters, kind) => found.push({ start, end, letters, kind });
     // Written as letters: D-EGLR, DEGLR, D-E-G-L-R, D-LR, or mixed: Delta EGLR, Delta LR
     const written = /\bD-?(?!ELTA\b)[A-CE-IK-P][A-Z]{3}\b|\bD-[A-CE-IK-P](?:-[A-Z]){3}\b|\bD-[A-Z]{2}\b|\bDelta[ -](?:[A-CE-IK-P][A-Z]{3}|[A-Z]{2})\b/g;
-    for (const m of text.matchAll(written)) ranges.push([m.index, m.index + m[0].length]);
+    for (const m of text.matchAll(written)) {
+      const letters = m[0].replace(/^Delta[ -]|^D-?/, '').replace(/-/g, '');
+      add(m.index, m.index + m[0].length, letters, letters.length === 4 ? 'full' : 'short');
+    }
     // Spoken in NATO words; words may be separated by spaces, hyphens or commas
     const words = [...text.matchAll(/x-ray|[a-z]+/gi)].map((m) => ({
       start: m.index, end: m.index + m[0].length, letter: NATO[m[0].toLowerCase()] || null }));
     const gapOk = (a, b) => /^[\s,\-]*$/.test(text.slice(a.end, b.start));
-    const full = [], partial = [];     // spelled-out full callsigns, and Delta + 3 letters
     for (let i = 0; i < words.length; i++) {
       if (words[i].letter !== 'D') continue;
       // Inside a spelled-out sequence (e.g. the D of D-EDKL), not the start of a callsign
@@ -321,40 +334,107 @@
         run.push(words[j]);
       }
       const moreLetters = continues(run[run.length - 1] || words[i], words[i + 1 + run.length]);
-      let last = null;
-      if (run.length === 4 && SECOND.test(run[0].letter)) { last = run[3]; full.push(run.map((w) => w.letter).join('')); }
-      else if (run.length === 2 && !moreLetters) last = run[1];
-      else if (run.length === 3 && !moreLetters) partial.push([words[i].start, run[2].end, run.map((w) => w.letter).join('')]);
-      if (last) {
-        ranges.push([words[i].start, last.end]);
-        i += run.indexOf(last) + 1;
+      const letters = (n) => run.slice(0, n).map((w) => w.letter).join('');
+      if (run.length === 4 && SECOND.test(run[0].letter)) {
+        add(words[i].start, run[3].end, letters(4), 'full');
+        i += 4;
+      } else if (run.length === 2 && !moreLetters) {
+        add(words[i].start, run[1].end, letters(2), 'short');
+        i += 2;
+      } else if (run.length === 3 && !moreLetters) {
+        // Delta plus three letters: probably a full callsign with a letter Whisper lost
+        add(words[i].start, run[2].end, letters(3), 'partial');
+        i += 3;
       }
     }
-    // Delta plus three letters: a full callsign from the same transmission with one
-    // letter lost ("Delta Echo Romeo November" next to "Delta Echo Alpha Romeo November")
-    for (const [s, e, letters] of partial) {
-      if (full.some((f) => [0, 1, 2, 3].some((k) => f.slice(0, k) + f.slice(k + 1) === letters))) ranges.push([s, e]);
+    const fulls = found.filter((f) => f.kind === 'full').map((f) => f.letters);
+    const result = [];
+    for (const f of found) {
+      let letters = f.letters;
+      if (f.kind === 'short') {
+        letters = fulls.find((x) => x.endsWith(f.letters)) || f.letters;
+      } else if (f.kind === 'partial') {
+        // Only next to the full callsign it comes from, e.g. "Delta Echo Romeo
+        // November" next to "Delta Echo Alpha Romeo November"
+        letters = fulls.find((x) => [0, 1, 2, 3].some((k) => x.slice(0, k) + x.slice(k + 1) === f.letters));
+        if (!letters) continue;
+      }
+      result.push({ start: f.start, end: f.end, cs: 'D-' + letters });
     }
-    return ranges;
+    return result.sort((a, b) => a.start - b.start);
+  };
+  const csCache = new Map();
+  const callsignsOf = (text) => {
+    if (!csCache.has(text)) {
+      if (csCache.size > 5000) csCache.clear();
+      csCache.set(text, findCallsigns(text));
+    }
+    return csCache.get(text);
+  };
+  // The distinct callsigns of a clip, in order of appearance
+  const callsignList = (c) => (c.transcript ? [...new Set(callsignsOf(c.transcript).map((x) => x.cs))] : []);
+
+  // The transcript as shown, with callsigns in letters. Segments map each part
+  // of the shown text (disp) back to the original (raw).
+  const displayOf = (text) => {
+    const segs = [];
+    let disp = '', pos = 0;
+    const plain = (s, e) => {
+      if (e <= s) return;
+      segs.push({ raw: [s, e], disp: [disp.length, disp.length + e - s], cs: null });
+      disp += text.slice(s, e);
+    };
+    for (const c of callsignsOf(text)) {
+      if (c.start < pos) continue;         // overlaps the previous one
+      plain(pos, c.start);
+      segs.push({ raw: [c.start, c.end], disp: [disp.length, disp.length + c.cs.length], cs: c.cs });
+      disp += c.cs;
+      pos = c.end;
+    }
+    plain(pos, text.length);
+    return { disp, segs };
+  };
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // A search for a short form (D-RN) also finds the full callsigns ending in it
+  const shortQuery = (q) => { const m = /^d-?([a-z]{2})$/i.exec(q.trim()); return m && m[1].toUpperCase(); };
+  const matchesQuery = (text, q) => {
+    const t = text.toLowerCase();
+    if (t.includes(q) || displayOf(text).disp.toLowerCase().includes(q)) return true;
+    const end = shortQuery(q);
+    return !!end && callsignsOf(text).some((c) => c.cs.endsWith(end));
   };
 
-  // Escapes a transcript and marks callsigns (bold) and search hits (<mark>).
-  // Both are found as ranges in the raw text, so their tags never interfere.
+  // Escapes a transcript for display: callsigns in letters and bold, search hits
+  // marked. Hits are found in the shown text ("D-EA") and in the original words
+  // ("delta echo"), so both kinds of search mark the callsign.
   const highlight = (text) => {
-    const marks = callsignRanges(text).map(([s, e]) => [s, e, 'b']);
+    const { disp, segs } = displayOf(text);
+    const bold = segs.filter((s) => s.cs).map((s) => s.disp);
+    const hits = [];
     if (state.q) {
-      const re = new RegExp(state.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-      for (const m of text.matchAll(re)) if (m[0]) marks.push([m.index, m.index + m[0].length, 'mark']);
+      const re = new RegExp(escRe(state.q), 'gi');
+      for (const m of disp.matchAll(re)) if (m[0]) hits.push([m.index, m.index + m[0].length]);
+      for (const m of text.matchAll(re)) {
+        if (!m[0]) continue;
+        const [a, b] = [m.index, m.index + m[0].length];
+        for (const s of segs) {
+          if (s.raw[1] <= a || s.raw[0] >= b) continue;
+          if (s.cs) hits.push(s.disp);
+          else hits.push([s.disp[0] + Math.max(a, s.raw[0]) - s.raw[0], s.disp[0] + Math.min(b, s.raw[1]) - s.raw[0]]);
+        }
+      }
+      const end = shortQuery(state.q);
+      if (end) for (const s of segs) if (s.cs && s.cs.endsWith(end)) hits.push(s.disp);
     }
-    if (!marks.length) return esc(text);
-    const cuts = [...new Set([0, text.length, ...marks.flatMap(([s, e]) => [s, e])])].sort((a, b) => a - b);
+    if (!bold.length && !hits.length) return esc(disp);
+    const cuts = [...new Set([0, disp.length, ...bold.flat(), ...hits.flat()])].sort((a, b) => a - b);
+    const inside = (ranges, s, e) => ranges.some(([rs, re]) => rs <= s && e <= re);
     let html = '';
     for (let k = 0; k < cuts.length - 1; k++) {
       const [s, e] = [cuts[k], cuts[k + 1]];
-      let part = esc(text.slice(s, e));
-      for (const tag of ['mark', 'b']) {
-        if (marks.some(([ms, me, t]) => t === tag && ms <= s && e <= me)) part = `<${tag}>${part}</${tag}>`;
-      }
+      let part = esc(disp.slice(s, e));
+      if (inside(bold, s, e)) part = `<b>${part}</b>`;
+      if (inside(hits, s, e)) part = `<mark>${part}</mark>`;
       html += part;
     }
     return html;
@@ -458,7 +538,7 @@
     const q = state.q.toLowerCase();
     state.visible = [];
     state.clips.forEach((c, i) => {
-      if (!q || state.allDays || (c.transcript && c.transcript.toLowerCase().includes(q))) state.visible.push(i);
+      if (!q || state.allDays || (c.transcript && matchesQuery(c.transcript, q))) state.visible.push(i);
     });
   }
 
@@ -538,6 +618,9 @@
     $('#strip').innerHTML = s;
   }
 
+  // The callsign column: each callsign of the transmission on its own line
+  const csCell = (c) => `<span class="cs">${callsignList(c).map((cs) => `<i>${esc(cs)}</i>`).join('')}</span>`;
+
   function renderList() {
     const list = $('#list');
 
@@ -552,6 +635,7 @@
         html += `<li class="call"><button type="button" data-day="${c.date}" data-id="${esc(c.id)}">`
               + `<span class="t">${timeOf(c.start)}<span class="date">${esc(dayLabel(c.date, true))}</span></span>`
               + `<span class="d">${dur(c.duration || 0)}</span>`
+              + csCell(c)
               + `<span class="tx ${cls}">${text}</span></button></li>`;
       }
       list.innerHTML = html + '</ol>';
@@ -590,6 +674,7 @@
       html += `<li class="call${i === state.cur ? ' current' : ''}" id="c${i}"><button type="button" data-i="${i}">`
             + `<span class="t">${timeOf(c.start)}</span>`
             + `<span class="d">${dur(c.duration || 0)}</span>`
+            + csCell(c)
             + `<span class="tx ${cls}">${text}</span></button></li>`;
       prevEnd = c.start + (c.duration || 0);
     }
