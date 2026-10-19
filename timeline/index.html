@@ -38,7 +38,7 @@
   }
 
   * { box-sizing: border-box; }
-  html { scroll-padding-top: 220px; }
+  html { scroll-padding-top: 260px; }
   body {
     margin: 0;
     background: var(--console);
@@ -97,6 +97,24 @@
   .board .g6 { stroke: var(--muted); stroke-width: 1; opacity: .5; }
   .board .b  { fill: var(--bar); }
   .board .m  { fill: var(--amber); }
+  .board .k  { fill: var(--ink); }         /* transmissions with the selected callsign */
+  .board.selecting .b { opacity: .35; }
+
+  /* --- Callsign bar: the day's callsigns, click one to highlight its transmissions */
+  .csbar {
+    display: flex; gap: 6px; align-items: center; margin-top: 10px;
+    overflow-x: auto; white-space: nowrap; scrollbar-width: thin; padding-bottom: 2px;
+  }
+  .csbar[hidden] { display: none; }
+  .csbar .lbl { color: var(--muted); font-size: 14px; margin-right: 4px; }
+  .csbar button {
+    flex: none; cursor: pointer; font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+    padding: 3px 9px; border: 1px solid var(--rule); border-radius: 12px; background: var(--strip);
+  }
+  .csbar button small { font-weight: 400; color: var(--muted); margin-left: 5px; }
+  .csbar button:hover { border-color: var(--muted); }
+  .csbar button[aria-pressed="true"] { background: var(--ink); color: var(--strip); border-color: var(--ink); }
+  .csbar button[aria-pressed="true"] small { color: var(--strip); opacity: .75; }
   .board .now { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 3 3; }
   .board .ph { stroke: var(--amber); stroke-width: 3; }
   .ticks { position: relative; height: 18px; font-size: 12px; color: var(--muted); margin-top: 3px; }
@@ -126,6 +144,11 @@
   .call .date { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
   .call button:hover { border-color: var(--muted); border-left-color: var(--bar); }
   .call.current button { background: var(--amber-soft); border-left-color: var(--amber); }
+  /* A callsign is selected: its transmissions stand out, the others step back */
+  #list.selecting .call:not(.sel) button { opacity: .45; }
+  .call.sel button { border-color: var(--ink); border-left-color: var(--ink); }
+  .call.sel.current button { border-left-color: var(--amber); }
+  .call .cs i.on { background: var(--ink); color: var(--strip); border-radius: 3px; padding: 0 3px; margin-left: -3px; width: fit-content; }
   button:focus-visible, select:focus-visible, input:focus-visible {
     outline: 2px solid var(--amber); outline-offset: 2px;
   }
@@ -166,7 +189,7 @@
   .opts label { display: flex; gap: 6px; align-items: center; font-size: 15px; color: var(--muted); white-space: nowrap; }
 
   @media (max-width: 640px) {
-    html { scroll-padding-top: 280px; }
+    html { scroll-padding-top: 330px; }
     .wrap { padding: 0 14px; }
     .daynav select { font-size: 22px; }
     .search { margin-left: 0; width: 100%; }
@@ -218,6 +241,7 @@
       </div>
       <div class="ticks" id="ticks" aria-hidden="true"></div>
     </div>
+    <div class="csbar" id="csbar" role="toolbar" aria-label="Callsigns on this day" hidden></div>
     <p class="notice" id="notice" role="status" hidden></p>
   </div>
 </header>
@@ -264,6 +288,7 @@
     speed: 1, waiting: false,
     transcription: 'on', pending: 0, retranscribe: 0, transcriptionError: null,
     signature: '',
+    sel: null,                             // selected callsign in the callsign bar (D-EARN)
   };
   const audio = new Audio();
   audio.preload = 'auto';
@@ -574,9 +599,47 @@
   function render() {
     computeVisible();
     renderStats();
+    renderCsBar();
     renderStrip();
     renderList();
     renderPlayer();
+  }
+
+  // The day's callsigns: list [{cs, n, first}], most frequent first, and per clip
+  // the set of its callsigns. A short form (D-RN) counts towards the day's full
+  // callsign ending in those letters, if exactly one does (resolve).
+  let dayCs = { key: null };
+  function dayCallsigns() {
+    const key = state.day + '|' + state.signature;
+    if (dayCs.key === key) return dayCs;
+    const per = state.clips.map((c) => callsignList(c));
+    const fulls = [...new Set(per.flat().filter((cs) => cs.length === 6))];
+    const resolve = (cs) => {
+      if (cs.length !== 4) return cs;
+      const match = fulls.filter((f) => f.endsWith(cs.slice(2)));
+      return match.length === 1 ? match[0] : cs;
+    };
+    const byClip = per.map((list) => new Set(list.map(resolve)));
+    const counts = new Map();
+    byClip.forEach((set, i) => set.forEach((cs) => {
+      const e = counts.get(cs) || { cs, n: 0, first: state.clips[i].start };
+      e.n++;
+      counts.set(cs, e);
+    }));
+    const list = [...counts.values()].sort((a, b) => b.n - a.n || a.first - b.first);
+    return (dayCs = { key, list, byClip, resolve });
+  }
+  const isSel = (i) => !!state.sel && !state.results && dayCallsigns().byClip[i].has(state.sel);
+
+  function renderCsBar() {
+    const bar = $('#csbar');
+    const list = state.results ? [] : dayCallsigns().list;
+    if (state.sel && !list.some((x) => x.cs === state.sel)) state.sel = null;
+    bar.hidden = !list.length;
+    bar.innerHTML = !list.length ? '' : '<span class="lbl">Callsigns</span>' + list.map((x) =>
+      `<button type="button" data-cs="${esc(x.cs)}" aria-pressed="${x.cs === state.sel}"`
+      + ` title="${x.n} ${x.n === 1 ? 'transmission' : 'transmissions'}; click to highlight them">`
+      + `${esc(x.cs)}<small>${x.n}</small></button>`).join('');
   }
 
   function renderDaySelect() {
@@ -617,12 +680,15 @@
     const H = 100;
     const sums = new Array(288).fill(0);
     const hits = new Array(288).fill(false);
+    const picked = new Array(288).fill(false);   // transmissions with the selected callsign
     const q = state.q.toLowerCase();
-    for (const c of state.clips) {
+    state.clips.forEach((c, i) => {
       const b = Math.floor(minuteOfDay(c.start) / 5);
       sums[b] += c.duration || 0;
-      if (q && !state.allDays && c.transcript && c.transcript.toLowerCase().includes(q)) hits[b] = true;
-    }
+      if (q && !state.allDays && c.transcript && matchesQuery(c.transcript, q)) hits[b] = true;
+      if (isSel(i)) picked[b] = true;
+    });
+    $('#board').classList.toggle('selecting', !!state.sel && !state.results);
     const max = Math.max(60, ...sums);
     let s = '';
     for (let h = 1; h < 24; h++) {
@@ -631,7 +697,7 @@
     sums.forEach((v, i) => {
       if (!v) return;
       const bh = Math.max(8, Math.sqrt(v / max) * (H - 10));
-      s += `<rect x="${i * 5 + 0.5}" y="${H - bh}" width="4" height="${bh}" class="${hits[i] ? 'm' : 'b'}"/>`;
+      s += `<rect x="${i * 5 + 0.5}" y="${H - bh}" width="4" height="${bh}" class="${picked[i] ? 'k' : hits[i] ? 'm' : 'b'}"/>`;
     });
     if (state.day === state.today) {
       const now = new Date();
@@ -647,11 +713,17 @@
     $('#strip').innerHTML = s;
   }
 
-  // The callsign column: each callsign of the transmission on its own line
-  const csCell = (c) => `<span class="cs">${callsignList(c).map((cs) => `<i>${esc(cs)}</i>`).join('')}</span>`;
+  // The callsign column: each callsign of the transmission on its own line; the
+  // selected one marked (i = the clip's index on this day, if listed by day)
+  const csCell = (c, i) => {
+    const d = i === undefined || !state.sel ? null : dayCallsigns();
+    return `<span class="cs">${callsignList(c).map((cs) =>
+      `<i${d && d.resolve(cs) === state.sel ? ' class="on"' : ''}>${esc(cs)}</i>`).join('')}</span>`;
+  };
 
   function renderList() {
     const list = $('#list');
+    list.classList.toggle('selecting', !!state.sel && !state.results);
 
     if (state.results) {
       if (!state.results.length) {
@@ -700,10 +772,10 @@
         html += `<li class="gap">${gapText(gap)}</li>`;
       }
       const [cls, text] = transcriptOf(c);
-      html += `<li class="call${i === state.cur ? ' current' : ''}" id="c${i}"><button type="button" data-i="${i}">`
+      html += `<li class="call${i === state.cur ? ' current' : ''}${isSel(i) ? ' sel' : ''}" id="c${i}"><button type="button" data-i="${i}">`
             + `<span class="t">${timeOf(c.start)}</span>`
             + `<span class="d">${dur(c.duration || 0)}</span>`
-            + csCell(c)
+            + csCell(c, i)
             + `<span class="tx ${cls}">${text}</span></button></li>`;
       prevEnd = c.start + (c.duration || 0);
     }
@@ -820,6 +892,18 @@
     }
   });
 
+  // Callsign bar: click a callsign to highlight its transmissions, again to clear
+  $('#csbar').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-cs]');
+    if (!btn) return;
+    state.sel = state.sel === btn.dataset.cs ? null : btn.dataset.cs;
+    render();
+    if (!state.sel) return;
+    const first = state.visible.find((i) => isSel(i));
+    const el = first !== undefined && document.getElementById('c' + first);
+    if (el) el.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
+  });
+
   $('#board').addEventListener('click', (e) => {
     if (!state.clips.length) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -872,6 +956,7 @@
     if (e.key === ' ') { e.preventDefault(); togglePlay(); }
     else if (e.key === 'j') next();
     else if (e.key === 'k') prev();
+    else if (e.key === 'Escape' && state.sel) { state.sel = null; render(); }
   });
 
   // --- Start ----------------------------------------------------------------

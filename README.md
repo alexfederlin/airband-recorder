@@ -134,6 +134,10 @@ November") and a callsign with one letter lost or misheard become the full calls
 transmission; otherwise a short form shows as D-RN. Searching for D-EARN or D-RN finds the spoken forms too, also
 across all days.
 
+The bar under the activity strip lists the day's callsigns with the number of transmissions each appears in, most
+frequent first; a short form counts towards the day's full callsign ending in the same letters. Click a callsign to
+highlight its transmissions in the list and on the strip (the others are dimmed); click it again or press Esc to clear.
+
 Whisper sometimes hears a letter word as something else, e.g. "homie" for Romeo. Common cases are built in; add
 your own to `config/letters.txt` (copy `config/letters.txt.example`), one `heard = letter word` per line, then reload
 the page. These words only count as letters inside a spelled-out callsign; a word you map to Delta
