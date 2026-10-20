@@ -36,7 +36,7 @@ ENV WHISPER_BIN=/usr/local/bin/whisper-cli \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY server.py index.html ./
+COPY server.py adsb.py index.html ./
 
 EXPOSE 8090
 CMD ["python3", "server.py"]

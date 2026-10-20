@@ -144,6 +144,44 @@ the page. These words only count as letters inside a spelled-out callsign; a wor
 (`welter = Delta`) can also start one. For names that are always wrong (for
 example the tower's), a better prompt helps more: see `WHISPER_PROMPT` and the test set's Prompt lab.
 
+### Aircraft nearby (ADS-B)
+
+With the airport's position in `.env` (`AIRPORT_LAT`, `AIRPORT_LON`; Mönchengladbach is 51.2303, 6.5047), the
+timeline asks free ADS-B networks which aircraft are near the airport as soon as the recorder archives a
+transmission, and stores them in the clip's `.json`:
+
+- **Shown with each transmission:** callsign or registration, type, altitude and distance from the airport, for
+  aircraft within `ADSB_RADIUS_KM` and below `ADSB_MAX_ALT_FT`. Aircraft on the ground count only within
+  `ADSB_GROUND_KM`, so traffic at Düsseldorf stays out. The aircraft the transmission probably addressed comes first,
+  marked with an arrow, and its callsign joins the callsign column and the day's callsign bar.
+- **Better recognition:** their callsigns go into Whisper's prompt for that clip, the way they are spoken ("Delta
+  Echo Kilo Lima Mike" for D-EKLM, "Lufthansa four alpha bravo" for DLH4AB). Afterwards, short forms ("Delta Lima Mike")
+  and callsigns with a misheard letter resolve to the nearby aircraft, and airline callsigns are found in the
+  transcript ("Lufthansa four alpha bravo" or "Lufthansa 4AB", shown in bold; searching DLH4AB finds them).
+
+All networks are asked at once and their answers merged per aircraft, since one may know the callsign and another
+the registration:
+
+| Network | Notes |
+| --- | --- |
+| [adsb.lol](https://adsb.lol) | Free, no key |
+| [adsb.fi](https://adsb.fi) | Free for personal, non-commercial use; asks to be credited (the page does). One request per second |
+| [OpenSky](https://opensky-network.org) | Callsigns but no registrations. Anonymous use allows 400 requests a day, so the timeline spreads them over the day and reuses the last answer in between |
+| local readsb | `ADSB_LOCAL_URL`, once there is an SDR stick on the laptop; asked first |
+
+airplanes.live requires registration by email, so it isn't included. The networks only know the present, so only
+transmissions recorded while the feature is on get a snapshot; older ones show none. Airlines are matched by their
+radio name: common ones are built in, add more in `config/airlines.txt` (copy `config/airlines.txt.example`).
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `AIRPORT_LAT`, `AIRPORT_LON` | empty (off) | The airport's position in decimal degrees |
+| `ADSB_RADIUS_KM` | `20` | Aircraft within this distance count |
+| `ADSB_MAX_ALT_FT` | `5000` | Aircraft above this altitude don't |
+| `ADSB_GROUND_KM` | `3` | Aircraft on the ground count only this close |
+| `ADSB_SOURCES` | `adsb.lol,adsb.fi,opensky` | Networks to ask |
+| `ADSB_LOCAL_URL` | empty | A local readsb's `aircraft.json` |
+
 ## Managing the containers
 
 Run these in the repository folder. The service names are `recorder`, `timeline` and (if turned on) `rdio-scanner`.

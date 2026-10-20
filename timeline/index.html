@@ -141,6 +141,14 @@
   .call .tx { overflow-wrap: anywhere; max-width: 75ch; }
   .call .tx.quiet { color: var(--muted); font-style: italic; }
   .call .tx b, .now .what b { white-space: nowrap; }   /* never break a callsign at its hyphen */
+  /* Aircraft near the airport when the transmission was recorded (ADS-B) */
+  .call .acl { display: block; margin-top: 5px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+  .call .acl i { font-style: normal; display: inline-block; margin-right: 14px; white-space: nowrap; }
+  .call .acl i small { font-size: 12px; opacity: .85; }
+  .call .acl i.hit { color: var(--ink); font-weight: 600; }
+  .call .acl i.hit::before { content: "\2192\00a0"; }   /* → marks the addressed aircraft */
+  .stats .credits { font-size: 13px; }
+  .stats .credits a { color: inherit; }
   .call .date { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
   .call button:hover { border-color: var(--muted); border-left-color: var(--bar); }
   .call.current button { background: var(--amber-soft); border-left-color: var(--amber); }
@@ -335,7 +343,9 @@
   // cs in letters (D-EARN). A short form, or a full one with a letter lost,
   // becomes the full callsign when that appears in the same transmission;
   // otherwise a short form is written D plus its two letters (D-RN).
-  const findCallsigns = (text) => {
+  // known: letters of registrations expected anyway (the aircraft nearby, from
+  // ADS-B), used to complete short forms and misheard callsigns
+  const findCallsigns = (text, known = []) => {
     const found = [];                      // {start, end, letters, kind: full | short | partial}
     const add = (start, end, letters, kind) => found.push({ start, end, letters, kind });
     // Written as letters: D-EGLR, DEGLR, D-E-G-L-R, D-LR, or mixed: Delta EGLR, Delta LR
@@ -400,37 +410,118 @@
       // better none than a wrong short form like D-EA
     }
     const fulls = found.filter((f) => f.kind === 'full').map((f) => f.letters);
+    // Callsigns from the transmission itself come first; registrations of the
+    // aircraft nearby (ADS-B) count when exactly one of them fits
+    const pick = (fits) => fulls.find(fits) || (() => {
+      const k = known.filter(fits);
+      return k.length === 1 ? k[0] : undefined;
+    })();
     const result = [];
     for (const f of found) {
       let letters = f.letters;
       if (f.kind === 'short') {
-        letters = fulls.find((x) => x.endsWith(f.letters)) || f.letters;
+        letters = pick((x) => x.endsWith(f.letters)) || f.letters;
       } else if (f.kind === 'partial') {
         // Only next to the full callsign it comes from, e.g. "Delta Echo Romeo
         // November" next to "Delta Echo Alpha Romeo November"
-        letters = fulls.find((x) => [0, 1, 2, 3].some((k) => x.slice(0, k) + x.slice(k + 1) === f.letters));
+        letters = pick((x) => [0, 1, 2, 3].some((k) => x.slice(0, k) + x.slice(k + 1) === f.letters));
       } else if (f.kind === 'garbled') {
         // One wrong letter: only next to a full callsign it matches otherwise
-        letters = fulls.find((x) => [...f.letters].every((ch, k) => ch === '?' || ch === x[k]));
+        letters = pick((x) => [...f.letters].every((ch, k) => ch === '?' || ch === x[k]));
       }
-      if (letters) result.push({ start: f.start, end: f.end, cs: 'D-' + letters });
+      if (letters) result.push({ start: f.start, end: f.end, cs: 'D-' + letters, show: 'D-' + letters });
     }
     return result.sort((a, b) => a.start - b.start);
   };
-  const csCache = new Map();
-  const callsignsOf = (text) => {
-    if (!csCache.has(text)) {
-      if (csCache.size > 5000) csCache.clear();
-      csCache.set(text, findCallsigns(text));
+
+  // --- Aircraft nearby (ADS-B) -------------------------------------------------------
+  // Airline telephony designators from the server ({DLH: 'Lufthansa'}), see start()
+  let AIRLINES = {};
+  const DIGIT_WORDS = {
+    zero: '0', one: '1', two: '2', three: '3', tree: '3', four: '4', fower: '4', five: '5', fife: '5',
+    six: '6', seven: '7', eight: '8', nine: '9', niner: '9',
+    null: '0', eins: '1', zwo: '2', zwei: '2', drei: '3', vier: '4', 'fünf': '5', sechs: '6',
+    sieben: '7', acht: '8', neun: '9',
+  };
+  // German registrations of the aircraft nearby, as letters (EKLM for D-EKLM)
+  const nearbyRegs = (c) => [...new Set((c && c.aircraft || []).flatMap((a) => [a.reg, a.flight])
+    .map((x) => /^D-?([A-Z]{4})$/.exec((x || '').toUpperCase())).filter(Boolean).map((m) => m[1]))];
+  const airlineFlight = (a) => {
+    const m = /^([A-Z]{3})(\d[0-9A-Z]{0,3})$/.exec((a.flight || '').toUpperCase());
+    return m && AIRLINES[m[1]] && a.flight.toUpperCase() !== (a.reg || '').replace('-', '').toUpperCase()
+      ? { flight: m[0], name: AIRLINES[m[1]], suffix: m[2] } : null;
+  };
+  // Finds airline callsigns of the aircraft nearby in a transcript: the telephony
+  // name followed by the flight number, spoken or written ("Lufthansa four alpha
+  // bravo", "Lufthansa 4AB" for DLH4AB)
+  const findAirlines = (text, aircraft) => {
+    const flights = (aircraft || []).map(airlineFlight).filter(Boolean);
+    if (!flights.length) return [];
+    const tokens = [...text.matchAll(/x-ray|[a-zäöüß]+|\d+/gi)].map((m) => ({ start: m.index, end: m.index + m[0].length, w: m[0] }));
+    const gapOk = (a, b) => /^[\s,\-]*$/.test(text.slice(a.end, b.start));
+    const symbols = (t) => {            // what a token contributes to a flight number
+      const w = t.w.toLowerCase();
+      if (/^\d+$/.test(w)) return w;
+      if (DIGIT_WORDS[w]) return DIGIT_WORDS[w];
+      if (NATO[w] || ALIASES[w]) return NATO[w] || ALIASES[w];
+      if (/^[A-Z]{1,3}$/.test(t.w)) return t.w;   // written letters: "4AB"
+      return null;
+    };
+    const found = [];
+    for (const f of flights) {
+      const name = f.name.toLowerCase().split(/\s+/);
+      for (let i = 0; i < tokens.length; i++) {
+        // The name, as separate words or written together ("Airfrance", "Air France")
+        let j = i, ok = true;
+        for (const part of name) {
+          if (j < tokens.length && tokens[j].w.toLowerCase() === part && (j === i || gapOk(tokens[j - 1], tokens[j]))) j++;
+          else { ok = false; break; }
+        }
+        if (!ok) {
+          if (tokens[i].w.toLowerCase() !== name.join('')) continue;
+          j = i + 1;
+        }
+        let got = '', last = tokens[j - 1];
+        while (j < tokens.length && got.length < f.suffix.length && gapOk(last, tokens[j])) {
+          const s = symbols(tokens[j]);
+          if (!s) break;
+          got += s; last = tokens[j]; j++;
+        }
+        if (got === f.suffix) found.push({ start: tokens[i].start, end: last.end, cs: f.flight, show: text.slice(tokens[i].start, last.end) });
+      }
     }
-    return csCache.get(text);
+    return found;
+  };
+
+  const csCache = new Map();
+  // All callsigns in a transcript, in text order: registrations (shown as D-EARN)
+  // and, with the clip's aircraft (c), airline callsigns (shown as spoken, in bold)
+  const callsignsOf = (text, c) => {
+    const known = nearbyRegs(c);
+    const flights = (c && c.aircraft || []).map(airlineFlight).filter(Boolean).map((f) => f.flight);
+    const key = text + '\u0000' + known.join(',') + '\u0000' + flights.join(',');
+    if (!csCache.has(key)) {
+      if (csCache.size > 5000) csCache.clear();
+      csCache.set(key, [...findCallsigns(text, known), ...findAirlines(text, c && c.aircraft)]
+        .sort((a, b) => a.start - b.start));
+    }
+    return csCache.get(key);
   };
   // The distinct callsigns of a clip, in order of appearance
-  const callsignList = (c) => (c.transcript ? [...new Set(callsignsOf(c.transcript).map((x) => x.cs))] : []);
+  const callsignList = (c) => (c.transcript ? [...new Set(callsignsOf(c.transcript, c).map((x) => x.cs))] : []);
+  // The aircraft a transmission probably addressed: callsigns heard in it that
+  // belong to an aircraft nearby. Returns a Set of their ICAO hex codes.
+  const addressed = (c) => {
+    const heard = new Set(callsignList(c));
+    return new Set((c.aircraft || []).filter((a) => {
+      const reg = /^D-?([A-Z]{4})$/.exec((a.reg || a.flight || '').toUpperCase());
+      return (reg && heard.has('D-' + reg[1])) || (a.flight && heard.has(a.flight.toUpperCase()));
+    }).map((a) => a.hex));
+  };
 
   // The transcript as shown, with callsigns in letters. Segments map each part
   // of the shown text (disp) back to the original (raw).
-  const displayOf = (text) => {
+  const displayOf = (text, c) => {
     const segs = [];
     let disp = '', pos = 0;
     const plain = (s, e) => {
@@ -438,12 +529,12 @@
       segs.push({ raw: [s, e], disp: [disp.length, disp.length + e - s], cs: null });
       disp += text.slice(s, e);
     };
-    for (const c of callsignsOf(text)) {
-      if (c.start < pos) continue;         // overlaps the previous one
-      plain(pos, c.start);
-      segs.push({ raw: [c.start, c.end], disp: [disp.length, disp.length + c.cs.length], cs: c.cs });
-      disp += c.cs;
-      pos = c.end;
+    for (const x of callsignsOf(text, c)) {
+      if (x.start < pos) continue;         // overlaps the previous one
+      plain(pos, x.start);
+      segs.push({ raw: [x.start, x.end], disp: [disp.length, disp.length + x.show.length], cs: x.cs });
+      disp += x.show;
+      pos = x.end;
     }
     plain(pos, text.length);
     return { disp, segs };
@@ -451,18 +542,20 @@
   const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // A search for a short form (D-RN) also finds the full callsigns ending in it
   const shortQuery = (q) => { const m = /^d-?([a-z]{2})$/i.exec(q.trim()); return m && m[1].toUpperCase(); };
-  const matchesQuery = (text, q) => {
+  const matchesQuery = (text, q, c) => {
     const t = text.toLowerCase();
     if (t.includes(q) || displayOf(text).disp.toLowerCase().includes(q)) return true;
+    // An airline callsign of an aircraft nearby, searched as letters (DLH4AB)
+    if (c && callsignList(c).some((cs) => cs.toLowerCase() === q.replace(/\s+/g, ''))) return true;
     const end = shortQuery(q);
-    return !!end && callsignsOf(text).some((c) => c.cs.endsWith(end));
+    return !!end && callsignsOf(text, c).some((x) => x.cs.endsWith(end));
   };
 
   // Escapes a transcript for display: callsigns in letters and bold, search hits
   // marked. Hits are found in the shown text ("D-EA") and in the original words
   // ("delta echo"), so both kinds of search mark the callsign.
-  const highlight = (text) => {
-    const { disp, segs } = displayOf(text);
+  const highlight = (text, c) => {
+    const { disp, segs } = displayOf(text, c);
     const bold = segs.filter((s) => s.cs).map((s) => s.disp);
     const hits = [];
     if (state.q) {
@@ -499,7 +592,23 @@
     }
     if (c.status === 'error') return ['quiet', 'Transcription failed'];
     if (!c.transcript) return ['quiet', 'No speech recognised'];
-    return ['', highlight(c.transcript)];
+    return ['', highlight(c.transcript, c)];
+  };
+
+  // The aircraft near the airport when the transmission was recorded, the
+  // addressed one first and marked
+  const aircraftLine = (c) => {
+    if (!c.aircraft || !c.aircraft.length) return '';
+    const hit = addressed(c);
+    const list = [...c.aircraft].sort((a, b) => (hit.has(b.hex) - hit.has(a.hex)) || a.dist - b.dist);
+    return '<span class="acl">' + list.map((a) => {
+      const name = a.flight && a.flight !== (a.reg || '').replace('-', '') ? a.flight : (a.reg || a.flight || a.hex);
+      const details = [a.reg && a.reg !== name ? a.reg : '', a.type,
+        a.ground ? 'on ground' : a.alt != null ? `${a.alt.toLocaleString('en')} ft` : '',
+        a.dist != null ? `${a.dist.toFixed(1)} km` : ''].filter(Boolean).join(' · ');
+      return `<i class="ac${hit.has(a.hex) ? ' hit' : ''}" title="${hit.has(a.hex) ? 'Probably addressed in this transmission' : 'Nearby'}">`
+        + `${esc(name)}${details ? ` <small>${esc(details)}</small>` : ''}</i>`;
+    }).join('') + '</span>';
   };
 
   // --- Data -----------------------------------------------------------------
@@ -518,6 +627,7 @@
     state.pending = d.pending;
     state.retranscribe = d.retranscribe || 0;
     state.transcriptionError = d.transcription_error;
+    state.adsb = d.adsb || null;
     if (d.today) state.today = d.today;
   }
 
@@ -592,7 +702,7 @@
     const q = state.q.toLowerCase();
     state.visible = [];
     state.clips.forEach((c, i) => {
-      if (!q || state.allDays || (c.transcript && matchesQuery(c.transcript, q))) state.visible.push(i);
+      if (!q || state.allDays || (c.transcript && matchesQuery(c.transcript, q, c))) state.visible.push(i);
     });
   }
 
@@ -613,9 +723,9 @@
     const key = state.day + '|' + state.signature;
     if (dayCs.key === key) return dayCs;
     const per = state.clips.map((c) => callsignList(c));
-    const fulls = [...new Set(per.flat().filter((cs) => cs.length === 6))];
+    const fulls = [...new Set(per.flat().filter((cs) => /^D-[A-Z]{4}$/.test(cs)))];
     const resolve = (cs) => {
-      if (cs.length !== 4) return cs;
+      if (!/^D-[A-Z]{2}$/.test(cs)) return cs;
       const match = fulls.filter((f) => f.endsWith(cs.slice(2)));
       return match.length === 1 ? match[0] : cs;
     };
@@ -666,6 +776,12 @@
     }
     if (state.transcription !== 'off' && state.retranscribe > 0) {
       parts.push(`<span>${state.retranscribe} older clips to re-transcribe with the current model</span>`);
+    }
+    if (state.adsb) {
+      // The ADS-B networks ask to be credited
+      parts.push('<span class="credits">Aircraft: <a href="https://adsb.lol" target="_blank" rel="noopener">adsb.lol</a>, '
+        + '<a href="https://adsb.fi" target="_blank" rel="noopener">adsb.fi</a>, '
+        + '<a href="https://opensky-network.org" target="_blank" rel="noopener">OpenSky</a></span>');
     }
     $('#stats').innerHTML = parts.join('');
   }
@@ -737,7 +853,7 @@
               + `<span class="t">${timeOf(c.start)}<span class="date">${esc(dayLabel(c.date, true))}</span></span>`
               + `<span class="d">${dur(c.duration || 0)}</span>`
               + csCell(c)
-              + `<span class="tx ${cls}">${text}</span></button></li>`;
+              + `<span class="tx ${cls}">${text}${aircraftLine(c)}</span></button></li>`;
       }
       list.innerHTML = html + '</ol>';
       return;
@@ -776,7 +892,7 @@
             + `<span class="t">${timeOf(c.start)}</span>`
             + `<span class="d">${dur(c.duration || 0)}</span>`
             + csCell(c, i)
-            + `<span class="tx ${cls}">${text}</span></button></li>`;
+            + `<span class="tx ${cls}">${text}${aircraftLine(c)}</span></button></li>`;
       prevEnd = c.start + (c.duration || 0);
     }
     list.innerHTML = html + '</ol>';
@@ -963,7 +1079,12 @@
   async function start() {
     renderTicks();
     // Misheard letter words for callsign recognition; without them it still works
-    try { ALIASES = (await api('/api/letters')).aliases || {}; } catch (e) { /* older server */ }
+    // and airline telephony names for matching airline callsigns
+    try {
+      const l = await api('/api/letters');
+      ALIASES = l.aliases || {};
+      AIRLINES = l.airlines || {};
+    } catch (e) { /* older server */ }
     try {
       await loadDays();
       const wanted = location.hash.slice(1);

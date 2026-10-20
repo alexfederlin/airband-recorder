@@ -19,6 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import adsb
+
 HOME = Path.home()
 
 # --- Settings (override with environment variables) --------------------------
@@ -37,6 +39,9 @@ KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "30"))         # 0 = keep forever
 # 1 = transcripts made with another model or language are redone in the
 # background, after new clips (e.g. the whole archive after a model change)
 RETRANSCRIBE = os.environ.get("RETRANSCRIBE", "1") == "1"
+# ADS-B snapshots (adsb.py, needs AIRPORT_LAT/AIRPORT_LON): only for clips that
+# ended at most this many seconds ago, since the networks only know the present
+ADSB_MAX_AGE = float(os.environ.get("ADSB_MAX_AGE", "90"))
 # ------------------------------------------------------------------------------
 
 # Stored with each transcript, so a model, language or prompt change can be
@@ -57,7 +62,9 @@ HALLUCINATIONS = {
     "thanks for watching.", "bye.", "bye", ".",
 }
 
-STATE = {"transcription": "starting", "pending": 0, "redo": 0, "error": None}
+STATE = {"transcription": "starting", "pending": 0, "redo": 0, "error": None, "adsb": None}
+# The ADS-B watcher and the transcription worker both update clip .json files
+META_LOCK = threading.Lock()
 
 
 def log(msg):
@@ -79,6 +86,16 @@ def save_meta(path, meta):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
     os.replace(tmp, path)
+
+
+def update_meta(path, change):
+    """Reads a clip's .json, lets change(meta) modify it and writes it back, while
+    no other thread does the same."""
+    with META_LOCK:
+        meta = load_meta(path) or {}
+        change(meta)
+        save_meta(path, meta)
+        return meta
 
 
 def day_dirs(newest_first=True):
@@ -132,6 +149,9 @@ def read_day(folder, day):
             "frequency": meta.get("frequency"),
             "transcript": meta.get("transcript"),
             "status": clip_status(meta),
+            # Aircraft near the airport when it was recorded; None = no snapshot
+            "aircraft": [{k: a.get(k) for k in ("hex", "flight", "reg", "type", "alt", "ground", "dist")}
+                         for a in meta["adsb"].get("aircraft", [])] if "adsb" in meta else None,
         })
     clips.sort(key=lambda c: c["start"])
     return clips
@@ -272,15 +292,18 @@ def clean_text(text):
     return text
 
 
-def transcribe(wav):
+def transcribe(wav, aircraft=None):
+    """Transcribes a clip. The callsigns of the aircraft nearby when it was
+    recorded are added to the prompt, so Whisper expects them."""
     cmd = [
         "nice", "-n", "10", WHISPER_BIN,
         "-m", WHISPER_MODEL, "-f", str(wav),
         "-l", WHISPER_LANG, "-t", str(WHISPER_THREADS),
         "-nt", "-np",
     ]
-    if WHISPER_PROMPT:
-        cmd += ["--prompt", WHISPER_PROMPT]
+    prompt = adsb.prompt_for(aircraft, WHISPER_PROMPT)
+    if prompt:
+        cmd += ["--prompt", prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         detail = (result.stderr or "").strip().splitlines()
@@ -301,28 +324,82 @@ def cleanup_old_days():
 def transcribe_clip(meta_path, redo=False):
     wav = meta_path.with_suffix(".wav")
     started = time.time()
+    # A new clip gets its aircraft snapshot first (if the watcher hasn't taken it
+    # yet), so the nearby callsigns can go into Whisper's prompt
+    meta = take_snapshot(meta_path) if not redo else load_meta(meta_path)
+    aircraft = ((meta or {}).get("adsb") or {}).get("aircraft")
     try:
-        text = transcribe(wav)
-        meta = load_meta(meta_path) or {}
-        meta["transcript"] = text
-        meta["transcript_model"] = MODEL_TAG
-        meta["transcribed_at"] = int(time.time())
-        meta.pop("retranscribe_error", None)
-        save_meta(meta_path, meta)
+        text = transcribe(wav, aircraft)
+
+        def store(m):
+            m["transcript"] = text
+            m["transcript_model"] = MODEL_TAG
+            m["transcribed_at"] = int(time.time())
+            m.pop("retranscribe_error", None)
+        update_meta(meta_path, store)
         STATE["error"] = None
         log(f"{'Re-transcribed' if redo else 'Transcribed'} {meta_path.parent.name}/{wav.name} "
             f"in {time.time() - started:.1f} s: {text[:60]}")
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        meta = load_meta(meta_path) or {}
-        if redo:
-            # Keep the old transcript; don't try this clip again with this model
-            meta["retranscribe_error"] = str(exc)[:300]
-            meta["transcript_model"] = MODEL_TAG
-        else:
-            meta["transcript_error"] = str(exc)[:300]
-        save_meta(meta_path, meta)
+        def store_error(m):
+            if redo:
+                # Keep the old transcript; don't try this clip again with this model
+                m["retranscribe_error"] = str(exc)[:300]
+                m["transcript_model"] = MODEL_TAG
+            else:
+                m["transcript_error"] = str(exc)[:300]
+        update_meta(meta_path, store_error)
         STATE["error"] = str(exc)[:300]
         log(f"Transcription failed for {wav.name}: {exc}")
+
+
+# --- ADS-B snapshots --------------------------------------------------------------
+
+_snapshot_lock = threading.Lock()   # one snapshot at a time; the second caller finds it done
+
+
+def take_snapshot(meta_path):
+    """Stores the aircraft near the airport in a clip's .json, if ADS-B is on, the
+    clip ended recently and it has no snapshot yet. Returns the clip's metadata."""
+    meta = load_meta(meta_path)
+    if not adsb.ENABLED or meta is None or "adsb" in meta:
+        return meta
+    end = (meta.get("start") or 0) + (meta.get("duration") or 0)
+    if time.time() - end > ADSB_MAX_AGE:
+        return meta                      # too old: the networks only know the present
+    with _snapshot_lock:
+        meta = load_meta(meta_path)
+        if meta is None or "adsb" in meta:
+            return meta
+        snap = adsb.snapshot()
+        STATE["adsb"] = snap["sources"]
+        meta = update_meta(meta_path, lambda m: m.__setitem__("adsb", snap))
+    names = ", ".join(a["flight"] or a["reg"] or a["hex"] for a in snap["aircraft"][:6])
+    log(f"ADS-B {meta_path.parent.name}/{meta_path.stem}: {len(snap['aircraft'])} aircraft nearby"
+        + (f" ({names})" if names else ""))
+    return meta
+
+
+def adsb_watcher():
+    """Takes the snapshot as soon as the recorder archives a clip, independent of
+    how busy transcription is."""
+    done = set()
+    while True:
+        try:
+            for folder in day_dirs()[:2]:             # today, and yesterday around midnight
+                for meta_path in folder.glob("*.json"):
+                    if meta_path in done:
+                        continue
+                    if time.time() - meta_path.stat().st_mtime > ADSB_MAX_AGE + 60:
+                        done.add(meta_path)           # old clip, nothing to do
+                        continue
+                    meta = take_snapshot(meta_path)
+                    end = ((meta or {}).get("start") or 0) + ((meta or {}).get("duration") or 0)
+                    if meta is None or "adsb" in meta or time.time() - end > ADSB_MAX_AGE:
+                        done.add(meta_path)
+        except Exception as exc:  # keep watching whatever happens
+            log(f"ADS-B watcher error: {exc}")
+        time.sleep(2)
 
 
 def worker():
@@ -387,6 +464,7 @@ class Handler(BaseHTTPRequestHandler):
             "pending": STATE["pending"],
             "retranscribe": STATE["redo"],
             "transcription_error": STATE["error"],
+            "adsb": {"sources": STATE["adsb"]} if adsb.ENABLED else None,
         }
 
     def do_HEAD(self):
@@ -411,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
                                     today=datetime.date.today().isoformat(),
                                     date=day, clips=clips_for_day(day)))
             elif path == "/api/letters":
-                self.send_json({"aliases": letter_aliases()})
+                self.send_json({"aliases": letter_aliases(), "airlines": adsb.airlines()})
             elif path == "/api/search":
                 query = parse_qs(url.query).get("q", [""])[0].strip()
                 results = search(query) if len(query) >= 2 else []
@@ -461,6 +539,12 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ARCHIVE.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=worker, daemon=True).start()
+    if adsb.ENABLED:
+        threading.Thread(target=adsb_watcher, daemon=True).start()
+        log(f"ADS-B snapshots on: {adsb.RADIUS_KM:g} km around {adsb.AIRPORT_LAT}, {adsb.AIRPORT_LON}, "
+            f"below {adsb.MAX_ALT_FT:g} ft, sources: {', '.join(s.name for s in adsb.sources())}")
+    else:
+        log("ADS-B snapshots off (set AIRPORT_LAT and AIRPORT_LON to turn them on)")
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
     log(f"Timeline running on http://0.0.0.0:{PORT}/ (archive: {ARCHIVE})")

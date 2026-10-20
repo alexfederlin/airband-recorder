@@ -1,0 +1,24 @@
+# Airline radio names (telephony designators) for callsigns from ADS-B.
+# Copy this file to airlines.txt (same folder) and add your own.
+#
+# ADS-B sends airline flights as ICAO code plus number (DLH4AB). On the radio
+# they are spoken with the airline's telephony name ("Lufthansa four alpha
+# bravo"). The timeline uses this to put expected callsigns into Whisper's
+# prompt and to find them in transcripts. Airlines without a name here are
+# left out of both.
+#
+# One entry per line: the three-letter ICAO code, "=", and the radio name.
+# Lines starting with # are ignored. Changes apply without a restart.
+#
+# Built in already: DLH Lufthansa, GEC Lufthansa Cargo, CLH Hansaline,
+# EWG Eurowings, CFG Condor, TUI TUI jet, SXS Sunexpress, BEL Beeline,
+# AUA Austrian, SWR Swiss, KLM KLM, AFR Airfrance, BAW Speedbird, EZY Easy,
+# EJU Alpine, RYR Ryanair, WZZ Wizz Air, VLG Vueling, IBE Iberia,
+# SAS Scandinavian, FIN Finnair, LOT Lot, THY Turkish, PGT Sunturk,
+# UAE Emirates, QTR Qatari, BCS Eurotrans, DHK World Express, UPS UPS,
+# FDX Fedex, GAF German Air Force, CHX Christoph, NJE Fraction, EXS Channex,
+# TOM Tomson, BTI Air Baltic
+#
+# Examples:
+# HOP = Air Hamburg
+# FWD = Flying Ward

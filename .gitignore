@@ -3,6 +3,7 @@
 !*.conf.example
 .env
 config/letters.txt
+config/airlines.txt
 
 # Docker data folder (recordings, Rdio Scanner database) and model files
 data/

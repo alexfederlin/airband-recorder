@@ -65,6 +65,14 @@ services:
       WHISPER_PROMPT: ${WHISPER_PROMPT:-}
       RETRANSCRIBE: ${RETRANSCRIBE:-1}
       KEEP_DAYS: ${KEEP_DAYS:-30}
+      # ADS-B snapshots per transmission (off without the airport's position)
+      AIRPORT_LAT: ${AIRPORT_LAT:-}
+      AIRPORT_LON: ${AIRPORT_LON:-}
+      ADSB_RADIUS_KM: ${ADSB_RADIUS_KM:-20}
+      ADSB_MAX_ALT_FT: ${ADSB_MAX_ALT_FT:-5000}
+      ADSB_GROUND_KM: ${ADSB_GROUND_KM:-3}
+      ADSB_SOURCES: ${ADSB_SOURCES:-adsb.lol,adsb.fi,opensky}
+      ADSB_LOCAL_URL: ${ADSB_LOCAL_URL:-}
     volumes:
       - ${ARCHIVE_DIR:-./data/archive}:/data/archive
       - ./models:/extra-models:ro
