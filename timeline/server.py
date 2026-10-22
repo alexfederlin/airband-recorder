@@ -283,6 +283,7 @@ def find_pending():
 
 
 def clean_text(text):
+    text = text.replace("\ufffd", "")   # drop undecodable fragments
     text = NOISE_TAGS.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if text.lower() in HALLUCINATIONS:
@@ -304,7 +305,10 @@ def transcribe(wav, aircraft=None):
     prompt = adsb.prompt_for(aircraft, WHISPER_PROMPT)
     if prompt:
         cmd += ["--prompt", prompt]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    # whisper.cpp can emit invalid UTF-8 (a multi-byte character split across
+    # tokens), so decode leniently instead of crashing on it
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                            encoding="utf-8", errors="replace")
     if result.returncode != 0:
         detail = (result.stderr or "").strip().splitlines()
         raise RuntimeError(detail[-1] if detail else f"whisper exited with {result.returncode}")
@@ -340,7 +344,7 @@ def transcribe_clip(meta_path, redo=False):
         STATE["error"] = None
         log(f"{'Re-transcribed' if redo else 'Transcribed'} {meta_path.parent.name}/{wav.name} "
             f"in {time.time() - started:.1f} s: {text[:60]}")
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+    except Exception as exc:  # any failure marks the clip, so it isn't retried forever
         def store_error(m):
             if redo:
                 # Keep the old transcript; don't try this clip again with this model
